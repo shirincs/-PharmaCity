@@ -305,31 +305,47 @@ for _, row in df.iterrows():
     if origin_coords and dest_coords:
         color = [220, 50, 50] if row["Flagged"] == "YES" else [50, 180, 90]
         arc_data.append({
-            "origin": origin_coords, "destination": dest_coords,
-            "color": color, "shipment": row["Shipment"], "risk": row["Risk Score"],
+            "origin": origin_coords,
+            "destination": dest_coords,
+            "color": color,
+            "shipment": row["Shipment"],
+            "risk": row["Risk Score"],
+            "origin_name": row["Origin"],
+            "dest_name": row["Destination"],
         })
 
 arc_df = pd.DataFrame(arc_data)
 
 if not arc_df.empty:
     arc_layer = pdk.Layer(
-        "ArcLayer", data=arc_df,
-        get_source_position="origin", get_target_position="destination",
-        get_source_color="color", get_target_color="color",
-        get_width=4, pickable=True,
+        "ArcLayer",
+        data=arc_df,
+        get_source_position="origin",
+        get_target_position="destination",
+        get_source_color="color",
+        get_target_color="color",
+        get_width=3,
+        pickable=True,
     )
-    port_layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=pd.DataFrame([{"name": n, "coords": c} for n, c in PORTS.items()]),
-        get_position="coords", get_radius=30000,
-        get_fill_color=[30, 100, 200, 180], pickable=True,
+
+    view_state = pdk.ViewState(
+        latitude=20,
+        longitude=70,
+        zoom=2,
+        pitch=0,
+        bearing=0,
     )
-    view_state = pdk.ViewState(latitude=20, longitude=70, zoom=2.5, pitch=40)
+
     st.pydeck_chart(pdk.Deck(
-        layers=[arc_layer, port_layer],
+        layers=[arc_layer],
         initial_view_state=view_state,
-        tooltip={"text": "{shipment}\nRisk: {risk}"},
+        map_style="mapbox://styles/mapbox/light-v9",
+        tooltip={
+            "html": "<b>{shipment}</b><br/>{origin_name} → {dest_name}<br/>Risk: {risk}",
+            "style": {"backgroundColor": "white", "color": "black"},
+        },
     ))
+
     st.caption("Red arcs = flagged shipments | Green arcs = cleared shipments")
 
 st.divider()
@@ -347,7 +363,7 @@ def color_risk(val):
         return "background-color: #fff4cc"
     return "background-color: #ccffcc"
 
-styled = df.style.applymap(color_risk, subset=["Risk Score"])
+styled = df.style.map(color_risk, subset=["Risk Score"])
 st.dataframe(styled, use_container_width=True, hide_index=True)
 
 st.divider()

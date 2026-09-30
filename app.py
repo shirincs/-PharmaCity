@@ -13,17 +13,30 @@ st.set_page_config(page_title="Aman - Pharma Supply Chain Integrity", layout="wi
 # PORT COORDINATES
 # ============================================================================
 
+# PORTS = {
+#     "Mumbai, India": [19.0760, 72.8777],
+#     "Shanghai, China": [31.2304, 121.4737],
+#     "Singapore": [1.3521, 103.8198],
+#     "Hong Kong": [22.3193, 114.1694],
+#     "Istanbul, Turkey": [41.0082, 28.9784],
+#     "Cairo, Egypt": [30.0444, 31.2357],
+#     "Jebel Ali, UAE": [25.0118, 55.0617],
+#     "Abu Dhabi, UAE": [24.4539, 54.3773],
+#     "Dubai Airport, UAE": [25.2532, 55.3657],
+#     "Sharjah, UAE": [25.3463, 55.4209],
+# }
+
 PORTS = {
-    "Mumbai, India": [19.0760, 72.8777],
-    "Shanghai, China": [31.2304, 121.4737],
-    "Singapore": [1.3521, 103.8198],
-    "Hong Kong": [22.3193, 114.1694],
-    "Istanbul, Turkey": [41.0082, 28.9784],
-    "Cairo, Egypt": [30.0444, 31.2357],
-    "Jebel Ali, UAE": [25.0118, 55.0617],
-    "Abu Dhabi, UAE": [24.4539, 54.3773],
-    "Dubai Airport, UAE": [25.2532, 55.3657],
-    "Sharjah, UAE": [25.3463, 55.4209],
+    "Mumbai, India": [72.8777, 19.0760],     
+    "Shanghai, China": [121.4737, 31.2304],
+    "Singapore": [103.8198, 1.3521],
+    "Hong Kong": [114.1694, 22.3193],
+    "Istanbul, Turkey": [28.9784, 41.0082],
+    "Cairo, Egypt": [31.2357, 30.0444],
+    "Jebel Ali, UAE": [55.0617, 25.0118],
+    "Abu Dhabi, UAE": [54.3773, 24.4539],
+    "Dubai Airport, UAE": [55.3657, 25.2532],
+    "Sharjah, UAE": [55.4209, 25.3463],
 }
 
 # ============================================================================
@@ -325,6 +338,7 @@ if not arc_df.empty:
         get_source_color="color",
         get_target_color="color",
         get_width=3,
+        get_height=0.3,
         pickable=True,
     )
 

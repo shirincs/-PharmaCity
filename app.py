@@ -155,20 +155,20 @@ def train_models():
     cust = rng.uniform(0, 1, n_shipments)
 
     X_fusion = np.column_stack([doc, supp, cold, route, cust])
-
-    # Non-linear label: interactions + noise, NOT the same weighted sum
+    
+        # Non-linear label: interactions + noise, NOT the same weighted sum
     problem_signal = (
-        0.15 * doc
-        + 0.18 * supp
-        + 0.28 * cold
-        + 0.08 * route
-        + 0.12 * cust
+        0.20 * doc
+        + 0.25 * supp
+        + 0.35 * cold
+        + 0.15 * route
+        + 0.20 * cust
         + 0.20 * (cold * cust)     # cold breach + custody breach = extra bad
         + 0.12 * (doc * supp)      # fabricated docs from risky supplier = extra bad
-        - 0.08 * (route * (1 - cold))  # delay alone (no cold issue) = less concerning
+        - 0.05 * (route * (1 - cold))  # delay alone (no cold issue) = less concerning
         + rng.normal(0, 0.12, n_shipments)
     )
-    y_fusion = (problem_signal > 0.35).astype(int)
+    y_fusion = (problem_signal > 0.25).astype(int)
 
     Xf_train, Xf_test, yf_train, yf_test = train_test_split(
         X_fusion, y_fusion, test_size=0.2, random_state=42
@@ -279,8 +279,23 @@ if "shipments" not in st.session_state:
          "values": generate_natural_values(), "temp_log": [4,5,4,5,4,5,4],
          "planned": 48, "actual": 84, "openings": 0},
 
+                {"id": "SH-1011", "note": "Two mild issues", "origin": "Mumbai, India",
+         "destination": "Jebel Ali, UAE", "violations": 1, "years_active": 9, "volume": 500,
+         "values": generate_mildly_off_values(), "temp_log": [5,6,5,6,5,6,5],
+         "planned": 48, "actual": 52, "openings": 0},
+
+        {"id": "SH-1012", "note": "Moderate cold + mild route", "origin": "Singapore",
+         "destination": "Abu Dhabi, UAE", "violations": 1, "years_active": 10, "volume": 600,
+         "values": generate_natural_values(), "temp_log": [4,6,8,11,12,9,5],
+         "planned": 48, "actual": 58, "openings": 0},
+
+        {"id": "SH-1013", "note": "Mild custody + document issues", "origin": "Hong Kong",
+         "destination": "Dubai Airport, UAE", "violations": 2, "years_active": 7, "volume": 700,
+         "values": generate_mildly_off_values(), "temp_log": [4,5,4,5,4,5,4],
+         "planned": 48, "actual": 50, "openings": 1},
+
         # Worst case
-        {"id": "SH-1011", "note": "Multiple red flags", "origin": "Cairo, Egypt",
+        {"id": "SH-1014", "note": "Multiple red flags", "origin": "Cairo, Egypt",
          "destination": "Jebel Ali, UAE", "violations": 4, "years_active": 3, "volume": 900,
          "values": generate_suspicious_values(), "temp_log": [4,20,22,19,18,17,5],
          "planned": 48, "actual": 90, "openings": 2},
@@ -291,6 +306,8 @@ if "shipments" not in st.session_state:
 # ============================================================================
 
 st.title("Aman: Pharmaceutical Supply Chain Integrity")
+if "flash" in st.session_state:
+    st.success(st.session_state.pop("flash"))
 st.markdown("*AI-powered risk scoring for customs inspection prioritization*")
 st.divider()
 
@@ -347,10 +364,11 @@ with st.sidebar.form("add_shipment"):
             "values": vals, "temp_log": temps,
             "planned": new_planned, "actual": new_actual, "openings": new_openings,
         })
-        st.sidebar.success(f"Added {new_id}")
+        st.session_state["flash"] = f"Added {new_id}"
+        st.rerun()
 
 if st.sidebar.button("Reset to default shipments"):
-    st.session_state.shipments = st.session_state.shipments[:11]
+    st.session_state.shipments = st.session_state.shipments[:14]
     st.sidebar.success("Reset")
 
 # ============================================================================

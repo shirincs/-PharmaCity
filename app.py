@@ -1,3 +1,11 @@
+"""
+Aman: AI-Powered Pharmaceutical Supply Chain Integrity
+Streamlit Prototype for Presight Innovation Challenge
+
+Models trained at startup on synthetic data with non-linear interactions.
+Benford's Law and MKT are real formulas. Random seed fixed for reproducibility.
+"""
+
 import math
 import random
 import numpy as np
@@ -6,28 +14,20 @@ import pandas as pd
 import pydeck as pdk
 from xgboost import XGBClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, roc_auc_score
+
+random.seed(10)
+np.random.seed(10)
 
 st.set_page_config(page_title="Aman - Pharma Supply Chain Integrity", layout="wide")
 
 # ============================================================================
-# PORT COORDINATES
+# PORT COORDINATES [longitude, latitude]
 # ============================================================================
 
-# PORTS = {
-#     "Mumbai, India": [19.0760, 72.8777],
-#     "Shanghai, China": [31.2304, 121.4737],
-#     "Singapore": [1.3521, 103.8198],
-#     "Hong Kong": [22.3193, 114.1694],
-#     "Istanbul, Turkey": [41.0082, 28.9784],
-#     "Cairo, Egypt": [30.0444, 31.2357],
-#     "Jebel Ali, UAE": [25.0118, 55.0617],
-#     "Abu Dhabi, UAE": [24.4539, 54.3773],
-#     "Dubai Airport, UAE": [25.2532, 55.3657],
-#     "Sharjah, UAE": [25.3463, 55.4209],
-# }
-
 PORTS = {
-    "Mumbai, India": [72.8777, 19.0760],     
+    "Mumbai, India": [72.8777, 19.0760],
     "Shanghai, China": [121.4737, 31.2304],
     "Singapore": [103.8198, 1.3521],
     "Hong Kong": [114.1694, 22.3193],
@@ -40,7 +40,7 @@ PORTS = {
 }
 
 # ============================================================================
-# REAL FORMULAS (unchanged)
+# REAL FORMULAS
 # ============================================================================
 
 def document_integrity_check(declared_values):
@@ -78,7 +78,7 @@ def custody_integrity_check(openings):
 
 
 # ============================================================================
-# SYNTHETIC TRAINING DATA + MODEL TRAINING (at startup)
+# SYNTHETIC VALUE GENERATORS
 # ============================================================================
 
 def generate_natural_values(n=100):
@@ -94,38 +94,60 @@ def generate_suspicious_values(n=100):
     return [round(random.uniform(8000, 9999), 2) for _ in range(n)]
 
 
+def generate_mildly_off_values(n=100):
+    """Values that are slightly off Benford but not extreme."""
+    values = []
+    for _ in range(n):
+        magnitude = random.choice([100, 1000])
+        coeff = random.uniform(3, 7)  # narrow band, mild Benford deviation
+        values.append(round(coeff * magnitude, 2))
+    return values
+
+
+# ============================================================================
+# MODEL TRAINING (at startup, cached)
+# ============================================================================
+
 @st.cache_resource
 def train_models():
-    """
-    Trains XGBoost (supplier risk) and Logistic Regression (fusion)
-    on synthetic historical data at startup.
-    Cached so it only runs once per session.
-    """
     rng = np.random.default_rng(42)
 
-    # --- Supplier risk training data ---
+    # --- Supplier risk model (XGBoost) ---
     # Features: [violations, years_active, shipment_volume]
-    n_suppliers = 500
+    n_suppliers = 800
     violations = rng.integers(0, 10, n_suppliers)
     years_active = rng.integers(1, 30, n_suppliers)
     volume = rng.integers(10, 1000, n_suppliers)
 
     X_supplier = np.column_stack([violations, years_active, volume])
 
-    # Label: supplier flagged if violations high OR (new AND high volume)
-    # Add noise so it's not trivially separable
-    noise = rng.normal(0, 0.5, n_suppliers)
-    y_supplier = ((violations * 0.4) + (10 - years_active) * 0.05 + noise > 1.2).astype(int)
+    # Non-linear label: risk grows with violations, shrinks with years active,
+    # grows with volume, plus interaction between violations and newness
+    risk_signal = (
+        violations * 0.35
+        + (30 - years_active) * 0.02
+        + np.log1p(volume) * 0.08
+        + violations * (30 - years_active) * 0.005
+        + rng.normal(0, 0.4, n_suppliers)
+    )
+    y_supplier = (risk_signal > 1.5).astype(int)
+
+    Xs_train, Xs_test, ys_train, ys_test = train_test_split(
+        X_supplier, y_supplier, test_size=0.2, random_state=42
+    )
 
     xgb_model = XGBClassifier(
-        n_estimators=50, max_depth=3, learning_rate=0.1,
-        use_label_encoder=False, eval_metric="logloss", verbosity=0,
+        n_estimators=80, max_depth=3, learning_rate=0.1,
+        eval_metric="logloss", verbosity=0,
     )
-    xgb_model.fit(X_supplier, y_supplier)
+    xgb_model.fit(Xs_train, ys_train)
 
-    # --- Fusion training data ---
-    # Features: [doc_risk, supplier_risk, cold_risk, route_risk, custody_risk]
-    n_shipments = 800
+    supplier_acc = accuracy_score(ys_test, xgb_model.predict(Xs_test))
+    supplier_auc = roc_auc_score(ys_test, xgb_model.predict_proba(Xs_test)[:, 1])
+
+    # --- Fusion model (Logistic Regression) ---
+    # Features: [doc, supp, cold, route, cust]
+    n_shipments = 1500
     doc = rng.uniform(0, 1, n_shipments)
     supp = rng.uniform(0, 1, n_shipments)
     cold = rng.uniform(0, 1, n_shipments)
@@ -134,38 +156,57 @@ def train_models():
 
     X_fusion = np.column_stack([doc, supp, cold, route, cust])
 
-    # Label: shipment was actually a problem if weighted combination + noise > threshold
-    combined = (
-        doc * 0.20 + supp * 0.20 + cold * 0.25 + route * 0.15 + cust * 0.20
+    # Non-linear label: interactions + noise, NOT the same weighted sum
+    problem_signal = (
+        0.15 * doc
+        + 0.18 * supp
+        + 0.28 * cold
+        + 0.08 * route
+        + 0.12 * cust
+        + 0.20 * (cold * cust)     # cold breach + custody breach = extra bad
+        + 0.12 * (doc * supp)      # fabricated docs from risky supplier = extra bad
+        - 0.08 * (route * (1 - cold))  # delay alone (no cold issue) = less concerning
+        + rng.normal(0, 0.12, n_shipments)
     )
-    noise = rng.normal(0, 0.08, n_shipments)
-    y_fusion = ((combined + noise) > 0.45).astype(int)
+    y_fusion = (problem_signal > 0.35).astype(int)
+
+    Xf_train, Xf_test, yf_train, yf_test = train_test_split(
+        X_fusion, y_fusion, test_size=0.2, random_state=42
+    )
 
     log_model = LogisticRegression(max_iter=1000)
-    log_model.fit(X_fusion, y_fusion)
+    log_model.fit(Xf_train, yf_train)
 
-    return xgb_model, log_model
+    fusion_acc = accuracy_score(yf_test, log_model.predict(Xf_test))
+    fusion_auc = roc_auc_score(yf_test, log_model.predict_proba(Xf_test)[:, 1])
+
+    return {
+        "xgb": xgb_model,
+        "log": log_model,
+        "supplier_acc": supplier_acc,
+        "supplier_auc": supplier_auc,
+        "fusion_acc": fusion_acc,
+        "fusion_auc": fusion_auc,
+    }
 
 
-xgb_model, log_model = train_models()
+models = train_models()
+xgb_model = models["xgb"]
+log_model = models["log"]
 
 
 # ============================================================================
 # PIPELINE
 # ============================================================================
 
-def supplier_risk_score(violations, years_active=10, volume=100):
-    """Uses trained XGBoost model to predict probability of supplier being risky."""
+def supplier_risk_score(violations, years_active, volume):
     features = np.array([[violations, years_active, volume]])
-    prob = xgb_model.predict_proba(features)[0][1]
-    return float(prob)
+    return float(xgb_model.predict_proba(features)[0][1])
 
 
 def fuse_risk_scores(doc, supp, cold, route, cust):
-    """Uses trained Logistic Regression to combine signals into one score."""
     features = np.array([[doc, supp, cold, route, cust]])
-    prob = log_model.predict_proba(features)[0][1]
-    return float(prob)
+    return float(log_model.predict_proba(features)[0][1])
 
 
 def get_flag_reasons(doc, supp, cold, route, cust, threshold=0.5):
@@ -179,43 +220,70 @@ def get_flag_reasons(doc, supp, cold, route, cust, threshold=0.5):
 
 
 # ============================================================================
-# SESSION STATE
+# SHIPMENT DATABASE (natural gradient of risk)
 # ============================================================================
 
 if "shipments" not in st.session_state:
     st.session_state.shipments = [
+        # Clean shipments
         {"id": "SH-1001", "note": "Clean shipment", "origin": "Mumbai, India",
-         "destination": "Jebel Ali, UAE", "violations": 0,
+         "destination": "Jebel Ali, UAE", "violations": 0, "years_active": 18, "volume": 400,
          "values": generate_natural_values(), "temp_log": [4,5,4,5,6,5,4],
          "planned": 48, "actual": 47, "openings": 0},
-        {"id": "SH-1002", "note": "Fabricated paperwork + risky supplier", "origin": "Shanghai, China",
-         "destination": "Jebel Ali, UAE", "violations": 3,
-         "values": generate_suspicious_values(), "temp_log": [4,5,4,5,4,5,4],
-         "planned": 48, "actual": 49, "openings": 0},
-        {"id": "SH-1003", "note": "Cold-chain breach mid-transit", "origin": "Singapore",
-         "destination": "Abu Dhabi, UAE", "violations": 0,
-         "values": generate_natural_values(), "temp_log": [4,5,6,15,18,16,5],
-         "planned": 48, "actual": 48, "openings": 0},
-        {"id": "SH-1004", "note": "Major unexplained route delay", "origin": "Istanbul, Turkey",
-         "destination": "Jebel Ali, UAE", "violations": 0,
-         "values": generate_natural_values(), "temp_log": [4,5,4,5,4,5,4],
-         "planned": 48, "actual": 84, "openings": 0},
-        {"id": "SH-1005", "note": "Container opened twice", "origin": "Hong Kong",
-         "destination": "Dubai Airport, UAE", "violations": 0,
-         "values": generate_natural_values(), "temp_log": [4,5,4,5,4,5,4],
-         "planned": 48, "actual": 47, "openings": 2},
-        {"id": "SH-1006", "note": "Worst case - multiple red flags", "origin": "Cairo, Egypt",
-         "destination": "Jebel Ali, UAE", "violations": 4,
-         "values": generate_suspicious_values(), "temp_log": [4,20,22,19,18,17,5],
-         "planned": 48, "actual": 90, "openings": 1},
-        {"id": "SH-1007", "note": "Mild - low risk overall", "origin": "Mumbai, India",
-         "destination": "Sharjah, UAE", "violations": 1,
-         "values": generate_natural_values(), "temp_log": [5,6,5,6,5,6,5],
-         "planned": 48, "actual": 50, "openings": 0},
-        {"id": "SH-1008", "note": "Clean shipment", "origin": "Singapore",
-         "destination": "Jebel Ali, UAE", "violations": 0,
+
+        {"id": "SH-1002", "note": "Clean shipment", "origin": "Singapore",
+         "destination": "Jebel Ali, UAE", "violations": 0, "years_active": 22, "volume": 600,
          "values": generate_natural_values(), "temp_log": [4,4,5,5,4,4,5],
          "planned": 48, "actual": 46, "openings": 0},
+
+        # Mild concerns
+        {"id": "SH-1003", "note": "Minor route delay", "origin": "Istanbul, Turkey",
+         "destination": "Jebel Ali, UAE", "violations": 0, "years_active": 15, "volume": 350,
+         "values": generate_natural_values(), "temp_log": [4,5,4,5,4,5,4],
+         "planned": 48, "actual": 56, "openings": 0},
+
+        {"id": "SH-1004", "note": "Slightly elevated supplier risk", "origin": "Mumbai, India",
+         "destination": "Sharjah, UAE", "violations": 1, "years_active": 8, "volume": 500,
+         "values": generate_natural_values(), "temp_log": [5,6,5,6,5,6,5],
+         "planned": 48, "actual": 49, "openings": 0},
+
+        # Moderate concerns
+        {"id": "SH-1005", "note": "Mild cold-chain excursion", "origin": "Singapore",
+         "destination": "Abu Dhabi, UAE", "violations": 0, "years_active": 12, "volume": 450,
+         "values": generate_natural_values(), "temp_log": [4,5,6,9,10,7,5],
+         "planned": 48, "actual": 50, "openings": 0},
+
+        {"id": "SH-1006", "note": "Slight document anomaly", "origin": "Shanghai, China",
+         "destination": "Jebel Ali, UAE", "violations": 1, "years_active": 10, "volume": 700,
+         "values": generate_mildly_off_values(), "temp_log": [4,5,4,5,4,5,4],
+         "planned": 48, "actual": 48, "openings": 0},
+
+        {"id": "SH-1007", "note": "Container opened once", "origin": "Hong Kong",
+         "destination": "Dubai Airport, UAE", "violations": 0, "years_active": 14, "volume": 300,
+         "values": generate_natural_values(), "temp_log": [4,5,4,5,4,5,4],
+         "planned": 48, "actual": 47, "openings": 1},
+
+        # High concerns
+        {"id": "SH-1008", "note": "Cold-chain breach", "origin": "Cairo, Egypt",
+         "destination": "Jebel Ali, UAE", "violations": 1, "years_active": 9, "volume": 550,
+         "values": generate_natural_values(), "temp_log": [4,5,6,15,18,16,5],
+         "planned": 48, "actual": 48, "openings": 0},
+
+        {"id": "SH-1009", "note": "Fabricated paperwork", "origin": "Shanghai, China",
+         "destination": "Jebel Ali, UAE", "violations": 2, "years_active": 6, "volume": 800,
+         "values": generate_suspicious_values(), "temp_log": [4,5,4,5,4,5,4],
+         "planned": 48, "actual": 49, "openings": 0},
+
+        {"id": "SH-1010", "note": "Major route deviation", "origin": "Istanbul, Turkey",
+         "destination": "Jebel Ali, UAE", "violations": 1, "years_active": 11, "volume": 500,
+         "values": generate_natural_values(), "temp_log": [4,5,4,5,4,5,4],
+         "planned": 48, "actual": 84, "openings": 0},
+
+        # Worst case
+        {"id": "SH-1011", "note": "Multiple red flags", "origin": "Cairo, Egypt",
+         "destination": "Jebel Ali, UAE", "violations": 4, "years_active": 3, "volume": 900,
+         "values": generate_suspicious_values(), "temp_log": [4,20,22,19,18,17,5],
+         "planned": 48, "actual": 90, "openings": 2},
     ]
 
 # ============================================================================
@@ -227,6 +295,14 @@ st.markdown("*AI-powered risk scoring for customs inspection prioritization*")
 st.divider()
 
 st.sidebar.header("Controls")
+
+st.sidebar.subheader("Model Performance")
+st.sidebar.metric("Supplier Model Accuracy", f"{models['supplier_acc']:.1%}")
+st.sidebar.metric("Supplier Model AUC", f"{models['supplier_auc']:.2f}")
+st.sidebar.metric("Fusion Model Accuracy", f"{models['fusion_acc']:.1%}")
+st.sidebar.metric("Fusion Model AUC", f"{models['fusion_auc']:.2f}")
+
+st.sidebar.divider()
 st.sidebar.subheader("Flag Threshold")
 flag_threshold = st.sidebar.slider("Flag if score above", 0.0, 1.0, 0.5, 0.05)
 
@@ -234,32 +310,47 @@ st.sidebar.divider()
 st.sidebar.subheader("Add New Shipment")
 
 with st.sidebar.form("add_shipment"):
-    new_id = st.text_input("Shipment ID", "SH-1009")
+    new_id = st.text_input("Shipment ID", "SH-1012")
     new_note = st.text_input("Scenario note", "Custom entry")
     new_origin = st.selectbox("Origin", list(PORTS.keys()), index=0)
     new_dest = st.selectbox("Destination", list(PORTS.keys()), index=6)
     new_violations = st.number_input("Supplier violations", 0, 10, 0)
+    new_years = st.number_input("Supplier years active", 1, 50, 15)
+    new_volume = st.number_input("Shipment volume", 10, 2000, 400)
     new_openings = st.number_input("Unauthorized openings", 0, 10, 0)
     new_planned = st.number_input("Planned hours", 1, 200, 48)
     new_actual = st.number_input("Actual hours", 1, 200, 48)
-    value_type = st.selectbox("Declared values", ["Natural (Benford-compliant)", "Suspicious (fabricated)"])
-    temp_type = st.selectbox("Temperature log", ["Normal (2-8°C)", "Breach (spike to 20°C)"])
+    value_type = st.selectbox("Declared values", ["Natural (Benford-compliant)", "Suspicious (fabricated)", "Mildly off"])
+    temp_type = st.selectbox("Temperature log", ["Normal (2-8°C)", "Mild excursion (9-12°C)", "Breach (spike to 20°C)"])
 
     submitted = st.form_submit_button("Add Shipment")
 
     if submitted:
-        vals = generate_natural_values() if "Natural" in value_type else generate_suspicious_values()
-        temps = [4,5,4,5,4,5,4] if "Normal" in temp_type else [4,20,22,19,18,17,5]
+        if "Natural" in value_type:
+            vals = generate_natural_values()
+        elif "Suspicious" in value_type:
+            vals = generate_suspicious_values()
+        else:
+            vals = generate_mildly_off_values()
+
+        if "Normal" in temp_type:
+            temps = [4,5,4,5,4,5,4]
+        elif "Mild" in temp_type:
+            temps = [4,5,6,9,10,7,5]
+        else:
+            temps = [4,20,22,19,18,17,5]
+
         st.session_state.shipments.append({
             "id": new_id, "note": new_note,
             "origin": new_origin, "destination": new_dest,
-            "violations": new_violations, "values": vals, "temp_log": temps,
+            "violations": new_violations, "years_active": new_years, "volume": new_volume,
+            "values": vals, "temp_log": temps,
             "planned": new_planned, "actual": new_actual, "openings": new_openings,
         })
         st.sidebar.success(f"Added {new_id}")
 
 if st.sidebar.button("Reset to default shipments"):
-    st.session_state.shipments = st.session_state.shipments[:8]
+    st.session_state.shipments = st.session_state.shipments[:11]
     st.sidebar.success("Reset")
 
 # ============================================================================
@@ -268,7 +359,7 @@ if st.sidebar.button("Reset to default shipments"):
 
 def run_pipeline(s):
     doc = document_integrity_check(s["values"])
-    supp = supplier_risk_score(s["violations"])
+    supp = supplier_risk_score(s["violations"], s["years_active"], s["volume"])
     cold = cold_chain_integrity_check(s["temp_log"])
     route = route_integrity_check(s["planned"], s["actual"])
     cust = custody_integrity_check(s["openings"])
@@ -318,10 +409,8 @@ for _, row in df.iterrows():
     if origin_coords and dest_coords:
         color = [220, 50, 50] if row["Flagged"] == "YES" else [50, 180, 90]
         arc_data.append({
-            "origin": origin_coords,
-            "destination": dest_coords,
-            "color": color,
-            "shipment": row["Shipment"],
+            "origin": origin_coords, "destination": dest_coords,
+            "color": color, "shipment": row["Shipment"],
             "risk": row["Risk Score"],
             "origin_name": row["Origin"],
             "dest_name": row["Destination"],
@@ -331,35 +420,20 @@ arc_df = pd.DataFrame(arc_data)
 
 if not arc_df.empty:
     arc_layer = pdk.Layer(
-        "ArcLayer",
-        data=arc_df,
-        get_source_position="origin",
-        get_target_position="destination",
-        get_source_color="color",
-        get_target_color="color",
-        get_width=3,
-        get_height=0.3,
-        pickable=True,
+        "ArcLayer", data=arc_df,
+        get_source_position="origin", get_target_position="destination",
+        get_source_color="color", get_target_color="color",
+        get_width=3, get_height=0.3, pickable=True,
     )
-
-    view_state = pdk.ViewState(
-        latitude=20,
-        longitude=70,
-        zoom=2,
-        pitch=0,
-        bearing=0,
-    )
-
+    view_state = pdk.ViewState(latitude=20, longitude=70, zoom=2, pitch=0)
     st.pydeck_chart(pdk.Deck(
         layers=[arc_layer],
         initial_view_state=view_state,
-        map_style="mapbox://styles/mapbox/light-v9",
         tooltip={
             "html": "<b>{shipment}</b><br/>{origin_name} → {dest_name}<br/>Risk: {risk}",
             "style": {"backgroundColor": "white", "color": "black"},
         },
     ))
-
     st.caption("Red arcs = flagged shipments | Green arcs = cleared shipments")
 
 st.divider()
@@ -379,6 +453,25 @@ def color_risk(val):
 
 styled = df.style.map(color_risk, subset=["Risk Score"])
 st.dataframe(styled, use_container_width=True, hide_index=True)
+
+st.divider()
+
+# ============================================================================
+# WHAT THE MODEL LEARNED
+# ============================================================================
+
+st.subheader("What the Model Learned")
+
+feature_names = ["Document", "Supplier", "Cold-Chain", "Route", "Custody"]
+coefficients = log_model.coef_[0]
+
+importance_df = pd.DataFrame({
+    "Signal": feature_names,
+    "Learned Weight": [round(c, 3) for c in coefficients],
+}).sort_values("Learned Weight", ascending=False)
+
+st.dataframe(importance_df, use_container_width=True, hide_index=True)
+st.caption("Learned weights from the fusion model — higher = stronger predictor of actual problems.")
 
 st.divider()
 
@@ -412,5 +505,5 @@ st.divider()
 st.caption(
     "Prototype for Presight Innovation Challenge | "
     "Benford's Law + MKT are real formulas | "
-    "XGBoost + Logistic Regression trained on synthetic data at startup"
+    "XGBoost + Logistic Regression trained on synthetic data with non-linear interactions"
 )

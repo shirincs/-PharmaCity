@@ -1,0 +1,6 @@
+streamlit
+pandas
+pydeck
+numpy
+scikit-learn
+xgboost

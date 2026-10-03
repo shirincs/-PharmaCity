@@ -79,27 +79,26 @@ def custody_integrity_check(openings):
 
 @st.cache_data(ttl=86400)
 def fetch_real_uae_pharma_imports(api_key):
-    """Fetches real UAE pharmaceutical import values (HS Chapter 30) from UN Comtrade."""
+    """Fetches real UAE pharmaceutical import values from UN Comtrade."""
     try:
         df = comtradeapicall.getFinalData(
             api_key,
             typeCode='C',
             freqCode='A',
             clCode='HS',
-            period='2023',
-            reporterCode='784',   # UAE
-            cmdCode='30',         # HS Chapter 30 = Pharmaceuticals
-            flowCode='M',         # Imports
-            partnerCode='0',      # World
+            period='2022',
+            reporterCode='784',
+            cmdCode='3004',        # <-- CHANGED from '30' to '3004'
+            flowCode='M',
+            partnerCode='0',
             maxRecords=500,
         )
         if df is None or df.empty:
             return []
         values = df['primaryValue'].dropna().tolist()
         return [v for v in values if v > 0]
-    except Exception:
+    except Exception as e:
         return []
-
 
 def benford_check_real(real_values):
     if len(real_values) < 10:

@@ -86,9 +86,9 @@ def fetch_real_uae_pharma_imports(api_key):
             typeCode='C',
             freqCode='A',
             clCode='HS',
-            period='2022',
+            period='2021',
             reporterCode='784',
-            cmdCode='3004',        # <-- CHANGED from '30' to '3004'
+            cmdCode='30',        # <-- CHANGED from '30' to '3004'
             flowCode='M',
             partnerCode='0',
             maxRecords=500,

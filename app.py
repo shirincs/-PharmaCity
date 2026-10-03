@@ -1,10 +1,10 @@
 """
-Aman: AI-Powered Pharmaceutical Supply Chain Integrity
+PharmaCity: Pharmaceutical Supply Chain Integrity
 Streamlit Prototype for Presight Innovation Challenge
 
 Models trained at startup on synthetic data with non-linear interactions.
 Benford's Law and MKT are real formulas. Random seed fixed for reproducibility.
-Real-world Benford validation uses downloaded World Bank WITS trade data.
+Two shipments use real World Bank WITS trade declarations as invoice values.
 """
 
 import math
@@ -21,7 +21,7 @@ from sklearn.metrics import accuracy_score, roc_auc_score
 random.seed(10)
 np.random.seed(10)
 
-st.set_page_config(page_title="Aman - Pharma Supply Chain Integrity", layout="wide")
+st.set_page_config(page_title="PharmaCity - Pharma Supply Chain Integrity", layout="wide")
 
 # ============================================================================
 # PORT COORDINATES [longitude, latitude]
@@ -84,6 +84,7 @@ def custody_integrity_check(openings):
 
 @st.cache_data
 def load_real_uae_pharma_imports():
+    """Loads real UAE pharmaceutical import values from the WITS Excel file."""
     try:
         df = pd.read_excel("WITS-By-HS6Product.xlsx", sheet_name="By-HS6Product")
         value_col = None
@@ -95,9 +96,9 @@ def load_real_uae_pharma_imports():
             return []
         values = df[value_col].dropna().tolist()
         return [float(v) for v in values if v > 0]
-    except Exception as e:
-        st.error(f"Load error: {e}")   # <-- temporary debug
+    except Exception:
         return []
+
 
 def benford_check_real(real_values):
     if len(real_values) < 10:
@@ -108,6 +109,12 @@ def benford_check_real(real_values):
     observed = {d: leading.count(d) / n for d in range(1, 10)}
     deviation = sum(abs(observed[d] - expected[d]) for d in range(1, 10))
     return {"deviation": round(deviation, 4), "n_records": n}
+
+
+def get_real_values_sample(n=100):
+    """Returns up to n real WITS trade values, or [] if unavailable."""
+    real = load_real_uae_pharma_imports()
+    return real[:n] if len(real) >= n else real
 
 
 # ============================================================================
@@ -177,7 +184,6 @@ def train_models():
     # --- Fusion model (Logistic Regression) ---
     n_shipments = 1500
 
-    # DECOUPLED LABELS: ground truth comes from a latent "true risk" process
     latent_risk = (
         0.30 * rng.beta(2, 5, n_shipments)
         + 0.25 * rng.binomial(1, 0.15, n_shipments)
@@ -204,7 +210,6 @@ def train_models():
     fusion_acc = accuracy_score(yf_test, log_model.predict(Xf_test))
     fusion_auc = roc_auc_score(yf_test, log_model.predict_proba(Xf_test)[:, 1])
 
-    # Precision@k
     y_proba = log_model.predict_proba(Xf_test)[:, 1]
     order = np.argsort(-y_proba)
     k10 = max(1, int(0.1 * len(order)))
@@ -258,6 +263,10 @@ def get_flag_reasons(doc, supp, cold, route, cust, threshold=0.5):
 # ============================================================================
 
 if "shipments" not in st.session_state:
+    real_sample = get_real_values_sample(100)
+    if len(real_sample) < 10:
+        real_sample = generate_natural_values(100)  # fallback
+
     st.session_state.shipments = [
         {"id": "SH-1001", "note": "Clean shipment", "origin": "Mumbai, India",
          "destination": "Jebel Ali, UAE", "violations": 0, "years_active": 18, "volume": 400,
@@ -279,9 +288,11 @@ if "shipments" not in st.session_state:
          "values": generate_natural_values(), "temp_log": [5,6,5,6,5,6,5],
          "planned": 48, "actual": 49, "openings": 0},
 
-        {"id": "SH-1005", "note": "Mild cold-chain excursion", "origin": "Singapore",
-         "destination": "Abu Dhabi, UAE", "violations": 0, "years_active": 12, "volume": 450,
-         "values": generate_natural_values(), "temp_log": [4,5,6,9,10,7,5],
+        # REAL DATA SHIPMENT #1
+        {"id": "SH-1005", "note": "REAL WITS data — cold-chain excursion",
+         "origin": "Singapore", "destination": "Abu Dhabi, UAE",
+         "violations": 0, "years_active": 12, "volume": 450,
+         "values": real_sample, "temp_log": [4,5,6,9,10,7,5],
          "planned": 48, "actual": 50, "openings": 0},
 
         {"id": "SH-1006", "note": "Slight document anomaly", "origin": "Shanghai, China",
@@ -314,9 +325,11 @@ if "shipments" not in st.session_state:
          "values": generate_mildly_off_values(), "temp_log": [5,6,5,6,5,6,5],
          "planned": 48, "actual": 52, "openings": 0},
 
-        {"id": "SH-1012", "note": "Moderate cold + mild route", "origin": "Singapore",
-         "destination": "Abu Dhabi, UAE", "violations": 1, "years_active": 10, "volume": 600,
-         "values": generate_natural_values(), "temp_log": [4,6,8,11,12,9,5],
+        # REAL DATA SHIPMENT #2
+        {"id": "SH-1012", "note": "REAL WITS data — moderate cold + mild route",
+         "origin": "Singapore", "destination": "Abu Dhabi, UAE",
+         "violations": 1, "years_active": 10, "volume": 600,
+         "values": real_sample, "temp_log": [4,6,8,11,12,9,5],
          "planned": 48, "actual": 58, "openings": 0},
 
         {"id": "SH-1013", "note": "Mild custody + document issues", "origin": "Hong Kong",
@@ -334,7 +347,7 @@ if "shipments" not in st.session_state:
 # HEADER + SIDEBAR
 # ============================================================================
 
-st.title("Aman: Pharmaceutical Supply Chain Integrity")
+st.title("PharmaCity: Pharmaceutical Supply Chain Integrity")
 if "flash" in st.session_state:
     st.success(st.session_state.pop("flash"))
 st.markdown("*AI-powered risk scoring for customs inspection prioritization*")
@@ -526,7 +539,7 @@ st.divider()
 # DOCUMENT INTEGRITY — REAL DATA VALIDATION
 # ============================================================================
 
-st.subheader("Document Integrity — Validated on Real World Bank WITS Data")
+st.subheader("Document Integrity — Real World Bank WITS Data")
 
 real_values = load_real_uae_pharma_imports()
 result = benford_check_real(real_values) if real_values else None
@@ -537,9 +550,9 @@ if result:
         f"**{result['n_records']} records**, Benford deviation = **{result['deviation']}**."
     )
     st.caption(
-        "This is the same Benford's Law function used on synthetic data, "
-        "now validated against real declared trade values from the World Bank's "
-        "World Integrated Trade Solution (WITS) — which sources its data from UN Comtrade."
+        "Two shipments (SH-1005 and SH-1012) use these real WITS trade declarations as their "
+        "invoice values. The Benford engine runs on them exactly as it would in production. "
+        "The remaining shipments use synthetic values for demonstration."
     )
 else:
     st.warning(
@@ -578,5 +591,5 @@ st.caption(
     "Prototype for Presight Innovation Challenge | "
     "Benford's Law + MKT are real formulas | "
     "XGBoost + Logistic Regression trained on synthetic data with non-linear interactions | "
-    "Benford validated on real World Bank WITS trade data"
+    "Two shipments use real World Bank WITS trade data"
 )

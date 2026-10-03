@@ -16,6 +16,7 @@ from xgboost import XGBClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score
+import comtradeapicall
 
 random.seed(10)
 np.random.seed(10)
@@ -76,7 +77,39 @@ def route_integrity_check(planned_hours, actual_hours):
 def custody_integrity_check(openings):
     return min(openings * 0.6, 1.0)
 
+@st.cache_data(ttl=86400)
+def fetch_real_uae_pharma_imports(api_key):
+    """Fetches real UAE pharmaceutical import values (HS Chapter 30) from UN Comtrade."""
+    try:
+        df = comtradeapicall.getFinalData(
+            api_key,
+            typeCode='C',
+            freqCode='A',
+            clCode='HS',
+            period='2023',
+            reporterCode='784',   # UAE
+            cmdCode='30',         # HS Chapter 30 = Pharmaceuticals
+            flowCode='M',         # Imports
+            partnerCode='0',      # World
+            maxRecords=500,
+        )
+        if df is None or df.empty:
+            return []
+        values = df['primaryValue'].dropna().tolist()
+        return [v for v in values if v > 0]
+    except Exception:
+        return []
 
+
+def benford_check_real(real_values):
+    if len(real_values) < 10:
+        return None
+    expected = {d: math.log10(1 + 1 / d) for d in range(1, 10)}
+    leading = [int(str(int(abs(v)))[0]) for v in real_values if int(abs(v)) > 0]
+    n = len(leading)
+    observed = {d: leading.count(d) / n for d in range(1, 10)}
+    deviation = sum(abs(observed[d] - expected[d]) for d in range(1, 10))
+    return {"deviation": round(deviation, 4), "n_records": n}
 # ============================================================================
 # SYNTHETIC VALUE GENERATORS
 # ============================================================================
@@ -154,21 +187,31 @@ def train_models():
     route = rng.uniform(0, 1, n_shipments)
     cust = rng.uniform(0, 1, n_shipments)
 
-    X_fusion = np.column_stack([doc, supp, cold, route, cust])
     
-        # Non-linear label: interactions + noise, NOT the same weighted sum
-    problem_signal = (
-        0.20 * doc
-        + 0.25 * supp
-        + 0.35 * cold
-        + 0.15 * route
-        + 0.20 * cust
-        + 0.20 * (cold * cust)     # cold breach + custody breach = extra bad
-        + 0.12 * (doc * supp)      # fabricated docs from risky supplier = extra bad
-        - 0.05 * (route * (1 - cold))  # delay alone (no cold issue) = less concerning
-        + rng.normal(0, 0.12, n_shipments)
+    # DECOUPLED LABELS: ground truth comes from a latent "true risk" process,
+    # not from the same features the model trains on. This forces the model
+    # to INFER, not invert a known formula.
+    #
+    # Latent true risk (unobserved by the model) — different structure than the features
+    latent_risk = (
+        0.30 * rng.beta(2, 5, n_shipments)     # base population risk
+        + 0.25 * rng.binomial(1, 0.15, n_shipments)  # random "incident" flag
+        + 0.20 * rng.exponential(0.5, n_shipments).clip(0, 2)  # occasional severe event
     )
-    y_fusion = (problem_signal > 0.25).astype(int)
+
+    # Observed features are CORRUPTED, NOISY proxies of the latent risk
+    # (in reality, sensors and paperwork imperfectly reflect what's happening)
+    doc_obs = np.clip(latent_risk + rng.normal(0, 0.25, n_shipments), 0, 1)
+    supp_obs = np.clip(latent_risk * 0.8 + rng.normal(0, 0.3, n_shipments), 0, 1)
+    cold_obs = np.clip(latent_risk * 1.2 + rng.normal(0, 0.35, n_shipments), 0, 1)
+    route_obs = np.clip(latent_risk * 0.5 + rng.normal(0, 0.4, n_shipments), 0, 1)
+    cust_obs = np.clip(latent_risk * 0.7 + rng.normal(0, 0.3, n_shipments), 0, 1)
+
+    X_fusion = np.column_stack([doc_obs, supp_obs, cold_obs, route_obs, cust_obs])
+
+    # Label: did the shipment actually turn out to be a problem?
+    # Depends on LATENT risk (with noise), not on the observed features directly
+    y_fusion = (latent_risk + rng.normal(0, 0.25, n_shipments) > 0.55).astype(int)
 
     Xf_train, Xf_test, yf_train, yf_test = train_test_split(
         X_fusion, y_fusion, test_size=0.2, random_state=42
@@ -180,6 +223,14 @@ def train_models():
     fusion_acc = accuracy_score(yf_test, log_model.predict(Xf_test))
     fusion_auc = roc_auc_score(yf_test, log_model.predict_proba(Xf_test)[:, 1])
 
+        # Precision@k — the metric that matters for triage
+    y_proba = log_model.predict_proba(Xf_test)[:, 1]
+    order = np.argsort(-y_proba)
+    k10 = max(1, int(0.1 * len(order)))   # top 10%
+    k20 = max(1, int(0.2 * len(order)))   # top 20%
+    precision_at_10 = yf_test[order[:k10]].mean()
+    precision_at_20 = yf_test[order[:k20]].mean()
+
     return {
         "xgb": xgb_model,
         "log": log_model,
@@ -187,6 +238,8 @@ def train_models():
         "supplier_auc": supplier_auc,
         "fusion_acc": fusion_acc,
         "fusion_auc": fusion_auc,
+        "precision_at_10": precision_at_10,
+        "precision_at_20": precision_at_20,
     }
 
 
@@ -314,14 +367,30 @@ st.divider()
 st.sidebar.header("Controls")
 
 st.sidebar.subheader("Model Performance")
-st.sidebar.metric("Supplier Model Accuracy", f"{models['supplier_acc']:.1%}")
-st.sidebar.metric("Supplier Model AUC", f"{models['supplier_auc']:.2f}")
-st.sidebar.metric("Fusion Model Accuracy", f"{models['fusion_acc']:.1%}")
+st.sidebar.metric("Precision @ Top 10", f"{models['precision_at_10']:.1%}")
+st.sidebar.metric("Precision @ Top 20", f"{models['precision_at_20']:.1%}")
 st.sidebar.metric("Fusion Model AUC", f"{models['fusion_auc']:.2f}")
+st.sidebar.caption("Precision@k = of the top-k flagged shipments, how many were real problems?")
 
 st.sidebar.divider()
 st.sidebar.subheader("Flag Threshold")
 flag_threshold = st.sidebar.slider("Flag if score above", 0.0, 1.0, 0.5, 0.05)
+
+st.sidebar.divider()
+st.sidebar.subheader("Real Data Validation")
+api_key = st.sidebar.text_input("UN Comtrade API key", type="password")
+
+if api_key:
+    real_values = fetch_real_uae_pharma_imports(api_key)
+    if real_values:
+        result = benford_check_real(real_values)
+        if result:
+            st.sidebar.success(f"Validated on {result['n_records']} real records")
+            st.sidebar.metric("Benford deviation (real)", result["deviation"])
+        else:
+            st.sidebar.warning("Not enough records.")
+    else:
+        st.sidebar.warning("No data — check key.")
 
 st.sidebar.divider()
 st.sidebar.subheader("Add New Shipment")
@@ -492,6 +561,25 @@ st.dataframe(importance_df, use_container_width=True, hide_index=True)
 st.caption("Learned weights from the fusion model — higher = stronger predictor of actual problems.")
 
 st.divider()
+
+st.subheader("Document Integrity — Validated on Real UN Comtrade Data")
+
+if api_key:
+    real_values = fetch_real_uae_pharma_imports(api_key)
+    result = benford_check_real(real_values) if real_values else None
+    if result:
+        st.write(
+            f"Real UAE pharmaceutical import declarations (HS Chapter 30, 2023): "
+            f"**{result['n_records']} records**, Benford deviation = **{result['deviation']}**."
+        )
+        st.caption(
+            "This is the same Benford's Law function used on synthetic data, "
+            "now validated against real declared trade values from UN Comtrade."
+        )
+    else:
+        st.info("Enter your UN Comtrade API key in the sidebar to load real data.")
+else:
+    st.info("Enter your UN Comtrade API key in the sidebar to validate on real data.")
 
 # ============================================================================
 # BREAKDOWN

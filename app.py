@@ -4,6 +4,7 @@ Streamlit Prototype for Presight Innovation Challenge
 
 Models trained at startup on synthetic data with non-linear interactions.
 Benford's Law and MKT are real formulas. Random seed fixed for reproducibility.
+Real-world Benford validation uses downloaded World Bank WITS trade data.
 """
 
 import math
@@ -16,7 +17,6 @@ from xgboost import XGBClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score
-import comtradeapicall
 
 random.seed(10)
 np.random.seed(10)
@@ -77,26 +77,28 @@ def route_integrity_check(planned_hours, actual_hours):
 def custody_integrity_check(openings):
     return min(openings * 0.6, 1.0)
 
-@st.cache_data(ttl=86400)
-def fetch_real_uae_pharma_imports(api_key):
-    """Fetches real UAE pharmaceutical import values from UN Comtrade."""
+
+# ============================================================================
+# REAL DATA (World Bank WITS Excel file)
+# ============================================================================
+
+@st.cache_data
+def load_real_uae_pharma_imports():
+    """Loads real UAE pharmaceutical import values from the WITS Excel file."""
     try:
-        df = comtradeapicall.previewFinalData(
-            typeCode='C',
-            freqCode='A',
-            clCode='HS',
-            period='2022',
-            reporterCode='784',
-            cmdCode='3004',
-            flowCode='M',
-            partnerCode='0',
-        )
-        if df is None or df.empty:
+        df = pd.read_excel("WITS-By-HS6Product.xlsx")
+        value_col = None
+        for col in df.columns:
+            if "Trade Value" in col:
+                value_col = col
+                break
+        if value_col is None:
             return []
-        values = df['primaryValue'].dropna().tolist()
-        return [v for v in values if v > 0]
-    except Exception as e:
+        values = df[value_col].dropna().tolist()
+        return [float(v) for v in values if v > 0]
+    except Exception:
         return []
+
 
 def benford_check_real(real_values):
     if len(real_values) < 10:
@@ -107,6 +109,8 @@ def benford_check_real(real_values):
     observed = {d: leading.count(d) / n for d in range(1, 10)}
     deviation = sum(abs(observed[d] - expected[d]) for d in range(1, 10))
     return {"deviation": round(deviation, 4), "n_records": n}
+
+
 # ============================================================================
 # SYNTHETIC VALUE GENERATORS
 # ============================================================================
@@ -125,11 +129,10 @@ def generate_suspicious_values(n=100):
 
 
 def generate_mildly_off_values(n=100):
-    """Values that are slightly off Benford but not extreme."""
     values = []
     for _ in range(n):
         magnitude = random.choice([100, 1000])
-        coeff = random.uniform(3, 7)  # narrow band, mild Benford deviation
+        coeff = random.uniform(3, 7)
         values.append(round(coeff * magnitude, 2))
     return values
 
@@ -143,7 +146,6 @@ def train_models():
     rng = np.random.default_rng(42)
 
     # --- Supplier risk model (XGBoost) ---
-    # Features: [violations, years_active, shipment_volume]
     n_suppliers = 800
     violations = rng.integers(0, 10, n_suppliers)
     years_active = rng.integers(1, 30, n_suppliers)
@@ -151,8 +153,6 @@ def train_models():
 
     X_supplier = np.column_stack([violations, years_active, volume])
 
-    # Non-linear label: risk grows with violations, shrinks with years active,
-    # grows with volume, plus interaction between violations and newness
     risk_signal = (
         violations * 0.35
         + (30 - years_active) * 0.02
@@ -176,28 +176,15 @@ def train_models():
     supplier_auc = roc_auc_score(ys_test, xgb_model.predict_proba(Xs_test)[:, 1])
 
     # --- Fusion model (Logistic Regression) ---
-    # Features: [doc, supp, cold, route, cust]
     n_shipments = 1500
-    doc = rng.uniform(0, 1, n_shipments)
-    supp = rng.uniform(0, 1, n_shipments)
-    cold = rng.uniform(0, 1, n_shipments)
-    route = rng.uniform(0, 1, n_shipments)
-    cust = rng.uniform(0, 1, n_shipments)
 
-    
-    # DECOUPLED LABELS: ground truth comes from a latent "true risk" process,
-    # not from the same features the model trains on. This forces the model
-    # to INFER, not invert a known formula.
-    #
-    # Latent true risk (unobserved by the model) — different structure than the features
+    # DECOUPLED LABELS: ground truth comes from a latent "true risk" process
     latent_risk = (
-        0.30 * rng.beta(2, 5, n_shipments)     # base population risk
-        + 0.25 * rng.binomial(1, 0.15, n_shipments)  # random "incident" flag
-        + 0.20 * rng.exponential(0.5, n_shipments).clip(0, 2)  # occasional severe event
+        0.30 * rng.beta(2, 5, n_shipments)
+        + 0.25 * rng.binomial(1, 0.15, n_shipments)
+        + 0.20 * rng.exponential(0.5, n_shipments).clip(0, 2)
     )
 
-    # Observed features are CORRUPTED, NOISY proxies of the latent risk
-    # (in reality, sensors and paperwork imperfectly reflect what's happening)
     doc_obs = np.clip(latent_risk + rng.normal(0, 0.25, n_shipments), 0, 1)
     supp_obs = np.clip(latent_risk * 0.8 + rng.normal(0, 0.3, n_shipments), 0, 1)
     cold_obs = np.clip(latent_risk * 1.2 + rng.normal(0, 0.35, n_shipments), 0, 1)
@@ -206,8 +193,6 @@ def train_models():
 
     X_fusion = np.column_stack([doc_obs, supp_obs, cold_obs, route_obs, cust_obs])
 
-    # Label: did the shipment actually turn out to be a problem?
-    # Depends on LATENT risk (with noise), not on the observed features directly
     y_fusion = (latent_risk + rng.normal(0, 0.25, n_shipments) > 0.55).astype(int)
 
     Xf_train, Xf_test, yf_train, yf_test = train_test_split(
@@ -220,11 +205,11 @@ def train_models():
     fusion_acc = accuracy_score(yf_test, log_model.predict(Xf_test))
     fusion_auc = roc_auc_score(yf_test, log_model.predict_proba(Xf_test)[:, 1])
 
-        # Precision@k — the metric that matters for triage
+    # Precision@k
     y_proba = log_model.predict_proba(Xf_test)[:, 1]
     order = np.argsort(-y_proba)
-    k10 = max(1, int(0.1 * len(order)))   # top 10%
-    k20 = max(1, int(0.2 * len(order)))   # top 20%
+    k10 = max(1, int(0.1 * len(order)))
+    k20 = max(1, int(0.2 * len(order)))
     precision_at_10 = yf_test[order[:k10]].mean()
     precision_at_20 = yf_test[order[:k20]].mean()
 
@@ -270,12 +255,11 @@ def get_flag_reasons(doc, supp, cold, route, cust, threshold=0.5):
 
 
 # ============================================================================
-# SHIPMENT DATABASE (natural gradient of risk)
+# SHIPMENT DATABASE
 # ============================================================================
 
 if "shipments" not in st.session_state:
     st.session_state.shipments = [
-        # Clean shipments
         {"id": "SH-1001", "note": "Clean shipment", "origin": "Mumbai, India",
          "destination": "Jebel Ali, UAE", "violations": 0, "years_active": 18, "volume": 400,
          "values": generate_natural_values(), "temp_log": [4,5,4,5,6,5,4],
@@ -286,7 +270,6 @@ if "shipments" not in st.session_state:
          "values": generate_natural_values(), "temp_log": [4,4,5,5,4,4,5],
          "planned": 48, "actual": 46, "openings": 0},
 
-        # Mild concerns
         {"id": "SH-1003", "note": "Minor route delay", "origin": "Istanbul, Turkey",
          "destination": "Jebel Ali, UAE", "violations": 0, "years_active": 15, "volume": 350,
          "values": generate_natural_values(), "temp_log": [4,5,4,5,4,5,4],
@@ -297,7 +280,6 @@ if "shipments" not in st.session_state:
          "values": generate_natural_values(), "temp_log": [5,6,5,6,5,6,5],
          "planned": 48, "actual": 49, "openings": 0},
 
-        # Moderate concerns
         {"id": "SH-1005", "note": "Mild cold-chain excursion", "origin": "Singapore",
          "destination": "Abu Dhabi, UAE", "violations": 0, "years_active": 12, "volume": 450,
          "values": generate_natural_values(), "temp_log": [4,5,6,9,10,7,5],
@@ -313,7 +295,6 @@ if "shipments" not in st.session_state:
          "values": generate_natural_values(), "temp_log": [4,5,4,5,4,5,4],
          "planned": 48, "actual": 47, "openings": 1},
 
-        # High concerns
         {"id": "SH-1008", "note": "Cold-chain breach", "origin": "Cairo, Egypt",
          "destination": "Jebel Ali, UAE", "violations": 1, "years_active": 9, "volume": 550,
          "values": generate_natural_values(), "temp_log": [4,5,6,15,18,16,5],
@@ -329,7 +310,7 @@ if "shipments" not in st.session_state:
          "values": generate_natural_values(), "temp_log": [4,5,4,5,4,5,4],
          "planned": 48, "actual": 84, "openings": 0},
 
-                {"id": "SH-1011", "note": "Two mild issues", "origin": "Mumbai, India",
+        {"id": "SH-1011", "note": "Two mild issues", "origin": "Mumbai, India",
          "destination": "Jebel Ali, UAE", "violations": 1, "years_active": 9, "volume": 500,
          "values": generate_mildly_off_values(), "temp_log": [5,6,5,6,5,6,5],
          "planned": 48, "actual": 52, "openings": 0},
@@ -344,7 +325,6 @@ if "shipments" not in st.session_state:
          "values": generate_mildly_off_values(), "temp_log": [4,5,4,5,4,5,4],
          "planned": 48, "actual": 50, "openings": 1},
 
-        # Worst case
         {"id": "SH-1014", "note": "Multiple red flags", "origin": "Cairo, Egypt",
          "destination": "Jebel Ali, UAE", "violations": 4, "years_active": 3, "volume": 900,
          "values": generate_suspicious_values(), "temp_log": [4,20,22,19,18,17,5],
@@ -374,27 +354,10 @@ st.sidebar.subheader("Flag Threshold")
 flag_threshold = st.sidebar.slider("Flag if score above", 0.0, 1.0, 0.5, 0.05)
 
 st.sidebar.divider()
-st.sidebar.subheader("Real Data Validation")
-api_key = st.sidebar.text_input("UN Comtrade API key", type="password")
-st.sidebar.write(f"Debug: key length = {len(api_key) if api_key else 0}")
-
-if api_key:
-    real_values = fetch_real_uae_pharma_imports(api_key)
-    if real_values:
-        result = benford_check_real(real_values)
-        if result:
-            st.sidebar.success(f"Validated on {result['n_records']} real records")
-            st.sidebar.metric("Benford deviation (real)", result["deviation"])
-        else:
-            st.sidebar.warning("Not enough records.")
-    else:
-        st.sidebar.warning("No data — check key.")
-
-st.sidebar.divider()
 st.sidebar.subheader("Add New Shipment")
 
 with st.sidebar.form("add_shipment"):
-    new_id = st.text_input("Shipment ID", "SH-1012")
+    new_id = st.text_input("Shipment ID", "SH-1015")
     new_note = st.text_input("Scenario note", "Custom entry")
     new_origin = st.selectbox("Origin", list(PORTS.keys()), index=0)
     new_dest = st.selectbox("Destination", list(PORTS.keys()), index=6)
@@ -560,24 +523,30 @@ st.caption("Learned weights from the fusion model — higher = stronger predicto
 
 st.divider()
 
-st.subheader("Document Integrity — Validated on Real UN Comtrade Data")
+# ============================================================================
+# DOCUMENT INTEGRITY — REAL DATA VALIDATION
+# ============================================================================
 
-if api_key:
-    real_values = fetch_real_uae_pharma_imports(api_key)
-    result = benford_check_real(real_values) if real_values else None
-    if result:
-        st.write(
-            f"Real UAE pharmaceutical import declarations (HS Chapter 30, 2023): "
-            f"**{result['n_records']} records**, Benford deviation = **{result['deviation']}**."
-        )
-        st.caption(
-            "This is the same Benford's Law function used on synthetic data, "
-            "now validated against real declared trade values from UN Comtrade."
-        )
-    else:
-        st.info("Enter your UN Comtrade API key in the sidebar to load real data.")
+st.subheader("Document Integrity — Validated on Real World Bank WITS Data")
+
+real_values = load_real_uae_pharma_imports()
+result = benford_check_real(real_values) if real_values else None
+
+if result:
+    st.write(
+        f"Real UAE pharmaceutical import declarations (World Bank WITS): "
+        f"**{result['n_records']} records**, Benford deviation = **{result['deviation']}**."
+    )
+    st.caption(
+        "This is the same Benford's Law function used on synthetic data, "
+        "now validated against real declared trade values from the World Bank's "
+        "World Integrated Trade Solution (WITS) — which sources its data from UN Comtrade."
+    )
 else:
-    st.info("Enter your UN Comtrade API key in the sidebar to validate on real data.")
+    st.warning(
+        "Could not load 'WITS-By-HS6Product.xlsx'. Make sure the file is in the same "
+        "folder as app.py in your GitHub repo."
+    )
 
 # ============================================================================
 # BREAKDOWN
@@ -609,5 +578,6 @@ st.divider()
 st.caption(
     "Prototype for Presight Innovation Challenge | "
     "Benford's Law + MKT are real formulas | "
-    "XGBoost + Logistic Regression trained on synthetic data with non-linear interactions"
+    "XGBoost + Logistic Regression trained on synthetic data with non-linear interactions | "
+    "Benford validated on real World Bank WITS trade data"
 )

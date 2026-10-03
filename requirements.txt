@@ -4,4 +4,4 @@ pydeck
 numpy
 scikit-learn
 xgboost
-comtradeapicall
+openpyxl

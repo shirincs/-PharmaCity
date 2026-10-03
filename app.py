@@ -85,7 +85,7 @@ def custody_integrity_check(openings):
 @st.cache_data
 def load_real_uae_pharma_imports():
     try:
-        df = pd.read_excel("WITS-By-HS6Product.xlsx")
+        df = pd.read_excel("WITS-By-HS6Product.xlsx", sheet_name="By-HS6Product")
         value_col = None
         for col in df.columns:
             if "Trade Value" in col:

@@ -84,7 +84,6 @@ def custody_integrity_check(openings):
 
 @st.cache_data
 def load_real_uae_pharma_imports():
-    """Loads real UAE pharmaceutical import values from the WITS Excel file."""
     try:
         df = pd.read_excel("WITS-By-HS6Product.xlsx")
         value_col = None
@@ -96,9 +95,9 @@ def load_real_uae_pharma_imports():
             return []
         values = df[value_col].dropna().tolist()
         return [float(v) for v in values if v > 0]
-    except Exception:
+    except Exception as e:
+        st.error(f"Load error: {e}")   # <-- temporary debug
         return []
-
 
 def benford_check_real(real_values):
     if len(real_values) < 10:

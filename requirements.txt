@@ -4,3 +4,4 @@ pydeck
 numpy
 scikit-learn
 xgboost
+comtradeapicall

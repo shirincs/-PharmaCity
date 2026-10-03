@@ -379,6 +379,7 @@ flag_threshold = st.sidebar.slider("Flag if score above", 0.0, 1.0, 0.5, 0.05)
 st.sidebar.divider()
 st.sidebar.subheader("Real Data Validation")
 api_key = st.sidebar.text_input("UN Comtrade API key", type="password")
+st.sidebar.write(f"Debug: key length = {len(api_key) if api_key else 0}")
 
 if api_key:
     real_values = fetch_real_uae_pharma_imports(api_key)

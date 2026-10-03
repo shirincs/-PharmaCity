@@ -81,17 +81,15 @@ def custody_integrity_check(openings):
 def fetch_real_uae_pharma_imports(api_key):
     """Fetches real UAE pharmaceutical import values from UN Comtrade."""
     try:
-        df = comtradeapicall.getFinalData(
-            api_key,
+        df = comtradeapicall.previewFinalData(
             typeCode='C',
             freqCode='A',
             clCode='HS',
-            period='2021',
+            period='2022',
             reporterCode='784',
-            cmdCode='30',        # <-- CHANGED from '30' to '3004'
+            cmdCode='3004',
             flowCode='M',
             partnerCode='0',
-            maxRecords=500,
         )
         if df is None or df.empty:
             return []

@@ -293,7 +293,58 @@ models = train_models()
 xgb_model = models["xgb"]
 log_model = models["log"]
 
+def build_model_report():
+    """Builds a downloadable text report of all model metrics and diagnostics."""
+    lines = []
+    lines.append("=" * 60)
+    lines.append("PharmaCity — Model & Validation Report")
+    lines.append("=" * 60)
+    lines.append("")
 
+    lines.append("FUSION MODEL PERFORMANCE")
+    lines.append("-" * 60)
+    lines.append(f"Precision @ top 10% inspected:  {models['precision_at_10']:.3f}")
+    lines.append(f"Precision @ top 20% inspected:  {models['precision_at_20']:.3f}")
+    lines.append(f"Fusion Model AUC:               {models['fusion_auc']:.3f}")
+    lines.append(f"Base rate (random inspection):  {models['base_rate']:.3f}")
+    lines.append(f"Lift vs random @ 10%:           {models['precision_at_10'] / models['base_rate']:.2f}x")
+    lines.append(f"Lift vs random @ 20%:           {models['precision_at_20'] / models['base_rate']:.2f}x")
+    lines.append("")
+
+    lines.append("SUPPLIER RISK MODEL (XGBoost)")
+    lines.append("-" * 60)
+    lines.append(f"Accuracy: {models['supplier_acc']:.3f}")
+    lines.append(f"AUC:      {models['supplier_auc']:.3f}")
+    lines.append("")
+
+    lines.append("LEARNED FUSION WEIGHTS")
+    lines.append("-" * 60)
+    feature_names = ["Document", "Supplier", "Cold-Chain", "Route", "Custody"]
+    coefficients = log_model.coef_[0]
+    for name, coef in sorted(zip(feature_names, coefficients), key=lambda x: -abs(x[1])):
+        lines.append(f"  {name:<12} {coef:+.3f}")
+    lines.append("")
+
+    lines.append("WITS BENFORD VALIDATION")
+    lines.append("-" * 60)
+    real_values = load_real_uae_pharma_imports()
+    result = benford_check_real(real_values) if real_values else None
+    if result:
+        lines.append(f"Source:            World Bank WITS (HS 3004, UAE imports, 2021)")
+        lines.append(f"Records:           {result['n_records']}")
+        lines.append(f"Benford deviation: {result['deviation']}")
+        lines.append(f"Baseline used:     {BENFORD_NORMAL}")
+    else:
+        lines.append("WITS file not loaded.")
+    lines.append("")
+
+    lines.append("NOTES")
+    lines.append("-" * 60)
+    lines.append("All training data is synthetic. Metrics are a mechanism check,")
+    lines.append("not a production performance claim. Real validation requires")
+    lines.append("historical inspection outcomes from Customs.")
+
+    return "\n".join(lines)
 # ============================================================================
 # PIPELINE
 # ============================================================================
@@ -421,13 +472,13 @@ st.divider()
 
 st.sidebar.header("Controls")
 
-st.sidebar.subheader("Model Performance")
-base = models["base_rate"]
-st.sidebar.metric("Precision @ top 10% inspected", f"{models['precision_at_10']:.1%}", f"{models['precision_at_10'] / base:.1f}x vs random")
-st.sidebar.metric("Precision @ top 20% inspected", f"{models['precision_at_20']:.1%}", f"{models['precision_at_20'] / base:.1f}x vs random")
-st.sidebar.metric("Fusion Model AUC", f"{models['fusion_auc']:.2f}")
-st.sidebar.caption(f"Of the shipments inspected first, how many were real problems? Random inspection would find {base:.1%}. Synthetic data.")
-
+st.sidebar.subheader("Admin")
+st.sidebar.download_button(
+    "Download model report",
+    data=build_model_report(),
+    file_name="pharmacity_model_report.txt",
+    mime="text/plain",
+)
 st.sidebar.divider()
 st.sidebar.subheader("Inspection Capacity")
 capacity_pct = st.sidebar.slider("Inspect the top % of shipments", 5, 100, 30, 5)
@@ -538,60 +589,6 @@ st.divider()
 # MAP — aggregated by route (one arc per origin→destination pair)
 # ============================================================================
 
-# st.subheader("Global Shipment Routes")
-
-# route_groups = {}
-# for _, row in df.iterrows():
-#     key = (row["Origin"], row["Destination"])
-#     if key not in route_groups:
-#         route_groups[key] = {"count": 0, "max_risk": 0.0, "any_flagged": False}
-#     route_groups[key]["count"] += 1
-#     route_groups[key]["max_risk"] = max(route_groups[key]["max_risk"], row["Risk Score"])
-#     if row["Flagged"] == "YES":
-#         route_groups[key]["any_flagged"] = True
-
-# arc_data = []
-# for (origin, dest), info in route_groups.items():
-#     origin_coords = PORTS.get(origin)
-#     dest_coords = PORTS.get(dest)
-#     if origin_coords and dest_coords:
-#         color = [220, 50, 50] if info["any_flagged"] else [50, 180, 90]
-#         arc_data.append({
-#             "origin": origin_coords,
-#             "destination": dest_coords,
-#             "color": color,
-#             "width": 1 + info["count"],
-#             "label": f"{origin} → {dest}",
-#             "count": info["count"],
-#             "max_risk": round(info["max_risk"], 3),
-#         })
-
-# arc_df = pd.DataFrame(arc_data)
-
-# if not arc_df.empty:
-#     arc_layer = pdk.Layer(
-#         "ArcLayer", data=arc_df,
-#         get_source_position="origin", get_target_position="destination",
-#         get_source_color="color", get_target_color="color",
-#         get_width="width", get_height=0.3, pickable=True, auto_highlight=True,
-#     )
-#     view_state = pdk.ViewState(latitude=20, longitude=70, zoom=2, pitch=0)
-#     st.pydeck_chart(pdk.Deck(
-#         layers=[arc_layer],
-#         initial_view_state=view_state,
-#         tooltip={
-#             "html": "<b>{label}</b><br/>Shipments: {count}<br/>Highest risk: {max_risk}",
-#             "style": {"backgroundColor": "white", "color": "black"},
-#         },
-#         parameters={"pickingRadius": 10},
-#     ))
-#     st.caption(
-#         "One arc per route | Thickness = number of shipments | "
-#         "Red = at least one flagged shipment on this route"
-#     )
-
-# st.divider()
-
 st.subheader("Global Shipment Routes")
 
 route_groups = {}
@@ -659,57 +656,6 @@ st.dataframe(styled, use_container_width=True, hide_index=True)
 st.divider()
 
 # ============================================================================
-# WHAT THE MODEL LEARNED
-# ============================================================================
-
-# Console log for reference (not shown in the product UI)
-feature_names = ["Document", "Supplier", "Cold-Chain", "Route", "Custody"]
-coefficients = log_model.coef_[0]
-importance_df = pd.DataFrame({
-    "Signal": feature_names,
-    "Learned Weight": [round(c, 3) for c in coefficients],
-}).sort_values("Learned Weight", ascending=False)
-print("=== Fusion model learned weights ===")
-print(importance_df.to_string(index=False))
-print(f"Precision@10%: {models['precision_at_10']:.3f}")
-print(f"Precision@20%: {models['precision_at_20']:.3f}")
-print(f"Fusion AUC: {models['fusion_auc']:.3f}")
-print(f"Base rate: {models['base_rate']:.3f}")
-
-# Hidden in the product UI; available for Q&A
-with st.expander("Model diagnostics (for reference)"):
-    st.dataframe(importance_df, use_container_width=True, hide_index=True)
-    st.caption("Learned weights — higher = stronger predictor of actual problems.")
-
-# ============================================================================
-# DOCUMENT INTEGRITY — REAL DATA VALIDATION
-# ============================================================================
-
-# Console log for reference
-real_values = load_real_uae_pharma_imports()
-result = benford_check_real(real_values) if real_values else None
-if result:
-    print("=== WITS Benford validation ===")
-    print(f"Records: {result['n_records']}")
-    print(f"Benford deviation: {result['deviation']}")
-else:
-    print("=== WITS Benford validation: file not loaded ===")
-
-# Hidden in the product UI; available for Q&A
-with st.expander("Validation: Benford's Law on real trade data"):
-    if result:
-        st.write(
-            f"UAE pharmaceutical import trade values (World Bank WITS, HS 3004, 2021): "
-            f"**{result['n_records']} records**, Benford deviation = **{result['deviation']}**."
-        )
-        st.caption(
-            "Real, legitimate data is never perfectly Benford, so this deviation sets the baseline: "
-            "the Benford score only rises above it."
-        )
-    else:
-        st.warning("Could not load 'WITS-By-HS6Product.xlsx'.")
-
-# ============================================================================
 # BREAKDOWN
 # ============================================================================
 
@@ -735,12 +681,3 @@ with col_b:
     })
     st.bar_chart(factor_df.set_index("Check"))
  
-st.divider()
- 
-# st.caption(
-#     "Prototype for Presight Innovation Challenge | "
-#     "Benford's Law + MKT are real formulas | "
-#     "XGBoost + Logistic Regression trained on synthetic data with non-linear interactions | "
-#     "Document check = Benford's Law + registry verification (simulated registry) | "
-#     "Benford baseline from real World Bank WITS trade data"
-# )

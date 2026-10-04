@@ -2,6 +2,10 @@
 PharmaCity: Pharmaceutical Supply Chain Integrity
 Prototype for Presight Innovation Challenge
 
+Benford's Law and MKT are real formulas. The registry is SIMULATED.
+Clean shipments' declared values are resampled from real World Bank WITS data.
+Models trained on synthetic data. Random seed fixed for reproducibility.
+
 """
 
 import math

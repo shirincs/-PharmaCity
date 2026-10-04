@@ -2,9 +2,11 @@
 PharmaCity: Pharmaceutical Supply Chain Integrity
 Streamlit Prototype for Presight Innovation Challenge
 
-Models trained at startup on synthetic data with non-linear interactions.
-Benford's Law and MKT are real formulas. Random seed fixed for reproducibility.
-Two shipments use real World Bank WITS trade declarations as invoice values.
+Models trained at startup on synthetic data. Benford's Law and MKT are real formulas.
+Document check = Benford's Law (declared values) + registry verification (manufacturer
+and license claims). The registry is SIMULATED; it stands in for MOHAP's registry.
+Clean shipments' declared values are resampled from real World Bank WITS trade values.
+Random seed fixed for reproducibility.
 """
 
 import math
@@ -15,6 +17,8 @@ import pandas as pd
 import pydeck as pdk
 from xgboost import XGBClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score
 
@@ -44,7 +48,16 @@ PORTS = {
 # REAL FORMULAS
 # ============================================================================
 
+# Benford deviation measured on real, legitimate UAE pharma trade values (WITS, see
+# bottom of the page). Real clean data is never perfectly Benford, so the score
+# only starts rising above this level. BENFORD_MAX is roughly where fabricated
+# values land.
+BENFORD_NORMAL = 0.29
+BENFORD_MAX = 1.5
+
+
 def document_integrity_check(declared_values):
+    """Benford's Law half of the document check: are the declared values plausible?"""
     if len(declared_values) < 10:
         return 0.0
     expected = {d: math.log10(1 + 1 / d) for d in range(1, 10)}
@@ -52,7 +65,7 @@ def document_integrity_check(declared_values):
     n = len(leading)
     observed = {d: leading.count(d) / n for d in range(1, 10)}
     deviation = sum(abs(observed[d] - expected[d]) for d in range(1, 10))
-    return min(deviation / 1.0, 1.0)
+    return min(max((deviation - BENFORD_NORMAL) / (BENFORD_MAX - BENFORD_NORMAL), 0.0), 1.0)
 
 
 def cold_chain_integrity_check(temp_log, safe_threshold_c=8.0):
@@ -76,6 +89,62 @@ def route_integrity_check(planned_hours, actual_hours):
 
 def custody_integrity_check(openings):
     return min(openings * 0.6, 1.0)
+
+
+# ============================================================================
+# REGISTRY CHECK: the retrieval step of the proposal's RAG design
+# ============================================================================
+# Proposal: RAG verifies manufacturer / license claims against official registries.
+# Prototype: a small SIMULATED registry (fictional companies) stands in for MOHAP's
+# manufacturer and license registry. Retrieval = TF-IDF character n-gram similarity
+# (deterministic, runs offline). The language-model layer of the full RAG design
+# (reading unstructured registry documents, writing the explanation) is not built;
+# explanations here are templated.
+
+REGISTRY = [
+    {"license_id": "LIC-1001", "manufacturer": "Aldara Pharmaceuticals", "status": "Active"},
+    {"license_id": "LIC-1002", "manufacturer": "Brightwell Biotech", "status": "Active"},
+    {"license_id": "LIC-1003", "manufacturer": "Cedarline Medical", "status": "Active"},
+    {"license_id": "LIC-1004", "manufacturer": "Dunmore Healthcare", "status": "Expired"},
+    {"license_id": "LIC-1005", "manufacturer": "Evergreen Generics", "status": "Active"},
+    {"license_id": "LIC-1006", "manufacturer": "Fairhaven Labs", "status": "Active"},
+    {"license_id": "LIC-1007", "manufacturer": "Glenfield Pharma", "status": "Active"},
+    {"license_id": "LIC-1008", "manufacturer": "Harborview Therapeutics", "status": "Suspended"},
+]
+
+
+@st.cache_resource
+def build_registry_index():
+    vectorizer = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4))
+    matrix = vectorizer.fit_transform([r["manufacturer"] for r in REGISTRY])
+    return vectorizer, matrix
+
+
+def registry_integrity_check(manufacturer, license_id, min_similarity=0.6):
+    """Registry half of the document check. Returns (risk 0-1, explanation).
+
+    Severity order (a judgment call): unknown manufacturer (1.0) > wrong or unknown
+    license (0.8) > expired or suspended license (0.7) > small name mismatch.
+    """
+    vectorizer, matrix = build_registry_index()
+    sims = cosine_similarity(vectorizer.transform([manufacturer]), matrix)[0]
+    best = int(sims.argmax())
+    entry, sim = REGISTRY[best], float(sims[best])
+
+    if sim < min_similarity:
+        return 1.0, f"no registry entry resembles '{manufacturer}'"
+
+    claimed = license_id.strip().upper()
+    if claimed != entry["license_id"]:
+        owner = next((r["manufacturer"] for r in REGISTRY if r["license_id"] == claimed), None)
+        if owner:
+            return 0.8, f"license {claimed} belongs to {owner}, not {entry['manufacturer']}"
+        return 0.8, f"license {claimed} not found in registry"
+
+    if entry["status"] != "Active":
+        return 0.7, f"license {claimed} is {entry['status'].lower()}"
+
+    return max(0.0, round(1 - sim, 2)), f"verified ({entry['manufacturer']}, {claimed}, active)"
 
 
 # ============================================================================
@@ -111,17 +180,16 @@ def benford_check_real(real_values):
     return {"deviation": round(deviation, 4), "n_records": n}
 
 
-def get_real_values_sample(n=100):
-    """Returns up to n real WITS trade values, or [] if unavailable."""
-    real = load_real_uae_pharma_imports()
-    return real[:n] if len(real) >= n else real
-
-
 # ============================================================================
 # SYNTHETIC VALUE GENERATORS
 # ============================================================================
 
 def generate_natural_values(n=100):
+    """Declared values of a legitimate shipment: resampled from real WITS trade values
+    (synthetic log-uniform fallback if the file is missing)."""
+    real = load_real_uae_pharma_imports()
+    if len(real) >= 10:
+        return random.choices(real, k=n)
     values = []
     for _ in range(n):
         magnitude = random.choice([10, 100, 1000, 10000])
@@ -216,6 +284,7 @@ def train_models():
     k20 = max(1, int(0.2 * len(order)))
     precision_at_10 = yf_test[order[:k10]].mean()
     precision_at_20 = yf_test[order[:k20]].mean()
+    base_rate = yf_test.mean()  # share of real problems if we inspected at random
 
     return {
         "xgb": xgb_model,
@@ -226,6 +295,7 @@ def train_models():
         "fusion_auc": fusion_auc,
         "precision_at_10": precision_at_10,
         "precision_at_20": precision_at_20,
+        "base_rate": base_rate,
     }
 
 
@@ -263,82 +333,88 @@ def get_flag_reasons(doc, supp, cold, route, cust, threshold=0.5):
 # ============================================================================
 
 if "shipments" not in st.session_state:
-    real_sample = get_real_values_sample(100)
-    if len(real_sample) < 10:
-        real_sample = generate_natural_values(100)  # fallback
-
     st.session_state.shipments = [
         {"id": "SH-1001", "note": "Clean shipment", "origin": "Mumbai, India",
          "destination": "Jebel Ali, UAE", "violations": 0, "years_active": 18, "volume": 400,
+         "manufacturer": "Aldara Pharmaceuticals", "license": "LIC-1001",
          "values": generate_natural_values(), "temp_log": [4,5,4,5,6,5,4],
          "planned": 48, "actual": 47, "openings": 0},
 
         {"id": "SH-1002", "note": "Clean shipment", "origin": "Singapore",
          "destination": "Jebel Ali, UAE", "violations": 0, "years_active": 22, "volume": 600,
+         "manufacturer": "Brightwell Biotech", "license": "LIC-1002",
          "values": generate_natural_values(), "temp_log": [4,4,5,5,4,4,5],
          "planned": 48, "actual": 46, "openings": 0},
 
         {"id": "SH-1003", "note": "Minor route delay", "origin": "Istanbul, Turkey",
          "destination": "Jebel Ali, UAE", "violations": 0, "years_active": 15, "volume": 350,
+         "manufacturer": "Cedarline Medical", "license": "LIC-1003",
          "values": generate_natural_values(), "temp_log": [4,5,4,5,4,5,4],
          "planned": 48, "actual": 56, "openings": 0},
 
-        {"id": "SH-1004", "note": "Slightly elevated supplier risk", "origin": "Mumbai, India",
+        {"id": "SH-1004", "note": "Expired manufacturer license (numbers look natural)", "origin": "Mumbai, India",
          "destination": "Sharjah, UAE", "violations": 1, "years_active": 8, "volume": 500,
+         "manufacturer": "Dunmore Healthcare", "license": "LIC-1004",
          "values": generate_natural_values(), "temp_log": [5,6,5,6,5,6,5],
          "planned": 48, "actual": 49, "openings": 0},
 
-        # REAL DATA SHIPMENT #1
-        {"id": "SH-1005", "note": "REAL WITS data — cold-chain excursion",
-         "origin": "Singapore", "destination": "Abu Dhabi, UAE",
-         "violations": 0, "years_active": 12, "volume": 450,
-         "values": real_sample, "temp_log": [4,5,6,9,10,7,5],
+        {"id": "SH-1005", "note": "Mild cold-chain excursion", "origin": "Singapore",
+         "destination": "Abu Dhabi, UAE", "violations": 0, "years_active": 12, "volume": 450,
+         "manufacturer": "Brightwell Biotech", "license": "LIC-1002",
+         "values": generate_natural_values(), "temp_log": [4,5,6,9,10,7,5],
          "planned": 48, "actual": 50, "openings": 0},
 
         {"id": "SH-1006", "note": "Slight document anomaly", "origin": "Shanghai, China",
          "destination": "Jebel Ali, UAE", "violations": 1, "years_active": 10, "volume": 700,
+         "manufacturer": "Evergreen Generics", "license": "LIC-1005",
          "values": generate_mildly_off_values(), "temp_log": [4,5,4,5,4,5,4],
          "planned": 48, "actual": 48, "openings": 0},
 
         {"id": "SH-1007", "note": "Container opened once", "origin": "Hong Kong",
          "destination": "Dubai Airport, UAE", "violations": 0, "years_active": 14, "volume": 300,
+         "manufacturer": "Fairhaven Labs", "license": "LIC-1006",
          "values": generate_natural_values(), "temp_log": [4,5,4,5,4,5,4],
          "planned": 48, "actual": 47, "openings": 1},
 
         {"id": "SH-1008", "note": "Cold-chain breach", "origin": "Cairo, Egypt",
          "destination": "Jebel Ali, UAE", "violations": 1, "years_active": 9, "volume": 550,
+         "manufacturer": "Glenfield Pharma", "license": "LIC-1007",
          "values": generate_natural_values(), "temp_log": [4,5,6,15,18,16,5],
          "planned": 48, "actual": 48, "openings": 0},
 
         {"id": "SH-1009", "note": "Fabricated paperwork", "origin": "Shanghai, China",
          "destination": "Jebel Ali, UAE", "violations": 2, "years_active": 6, "volume": 800,
+         "manufacturer": "Zenith Biopharm International", "license": "LIC-9931",
          "values": generate_suspicious_values(), "temp_log": [4,5,4,5,4,5,4],
          "planned": 48, "actual": 49, "openings": 0},
 
         {"id": "SH-1010", "note": "Major route deviation", "origin": "Istanbul, Turkey",
          "destination": "Jebel Ali, UAE", "violations": 1, "years_active": 11, "volume": 500,
+         "manufacturer": "Cedarline Medical", "license": "LIC-1003",
          "values": generate_natural_values(), "temp_log": [4,5,4,5,4,5,4],
          "planned": 48, "actual": 84, "openings": 0},
 
         {"id": "SH-1011", "note": "Two mild issues", "origin": "Mumbai, India",
          "destination": "Jebel Ali, UAE", "violations": 1, "years_active": 9, "volume": 500,
+         "manufacturer": "Aldara Pharmaceuticals", "license": "LIC-1001",
          "values": generate_mildly_off_values(), "temp_log": [5,6,5,6,5,6,5],
          "planned": 48, "actual": 52, "openings": 0},
 
-        # REAL DATA SHIPMENT #2
-        {"id": "SH-1012", "note": "REAL WITS data — moderate cold + mild route",
-         "origin": "Singapore", "destination": "Abu Dhabi, UAE",
-         "violations": 1, "years_active": 10, "volume": 600,
-         "values": real_sample, "temp_log": [4,6,8,11,12,9,5],
+        {"id": "SH-1012", "note": "Moderate cold + mild route", "origin": "Singapore",
+         "destination": "Abu Dhabi, UAE", "violations": 1, "years_active": 10, "volume": 600,
+         "manufacturer": "Brightwell Biotech", "license": "LIC-1002",
+         "values": generate_natural_values(), "temp_log": [4,6,8,11,12,9,5],
          "planned": 48, "actual": 58, "openings": 0},
 
-        {"id": "SH-1013", "note": "Mild custody + document issues", "origin": "Hong Kong",
+        {"id": "SH-1013", "note": "Mild custody + document issues (wrong license)", "origin": "Hong Kong",
          "destination": "Dubai Airport, UAE", "violations": 2, "years_active": 7, "volume": 700,
+         "manufacturer": "Fairhaven Labs", "license": "LIC-1007",
          "values": generate_mildly_off_values(), "temp_log": [4,5,4,5,4,5,4],
          "planned": 48, "actual": 50, "openings": 1},
 
         {"id": "SH-1014", "note": "Multiple red flags", "origin": "Cairo, Egypt",
          "destination": "Jebel Ali, UAE", "violations": 4, "years_active": 3, "volume": 900,
+         "manufacturer": "Nilecrest Pharma", "license": "LIC-0000",
          "values": generate_suspicious_values(), "temp_log": [4,20,22,19,18,17,5],
          "planned": 48, "actual": 90, "openings": 2},
     ]
@@ -356,14 +432,15 @@ st.divider()
 st.sidebar.header("Controls")
 
 st.sidebar.subheader("Model Performance")
-st.sidebar.metric("Precision @ Top 10", f"{models['precision_at_10']:.1%}")
-st.sidebar.metric("Precision @ Top 20", f"{models['precision_at_20']:.1%}")
+base = models["base_rate"]
+st.sidebar.metric("Precision @ top 10% inspected", f"{models['precision_at_10']:.1%}", f"{models['precision_at_10'] / base:.1f}x vs random")
+st.sidebar.metric("Precision @ top 20% inspected", f"{models['precision_at_20']:.1%}", f"{models['precision_at_20'] / base:.1f}x vs random")
 st.sidebar.metric("Fusion Model AUC", f"{models['fusion_auc']:.2f}")
-st.sidebar.caption("Precision@k = of the top-k flagged shipments, how many were real problems?")
+st.sidebar.caption(f"Of the shipments inspected first, how many were real problems? Random inspection would find {base:.1%}. Synthetic data.")
 
 st.sidebar.divider()
-st.sidebar.subheader("Flag Threshold")
-flag_threshold = st.sidebar.slider("Flag if score above", 0.0, 1.0, 0.5, 0.05)
+st.sidebar.subheader("Inspection Capacity")
+capacity_pct = st.sidebar.slider("Inspect the top % of shipments", 5, 100, 30, 5)
 
 st.sidebar.divider()
 st.sidebar.subheader("Add New Shipment")
@@ -376,6 +453,8 @@ with st.sidebar.form("add_shipment"):
     new_violations = st.number_input("Supplier violations", 0, 10, 0)
     new_years = st.number_input("Supplier years active", 1, 50, 15)
     new_volume = st.number_input("Shipment volume", 10, 2000, 400)
+    new_mfr = st.text_input("Manufacturer (as written on manifest)", REGISTRY[0]["manufacturer"])
+    new_license = st.text_input("License number (as written on manifest)", REGISTRY[0]["license_id"])
     new_openings = st.number_input("Unauthorized openings", 0, 10, 0)
     new_planned = st.number_input("Planned hours", 1, 200, 48)
     new_actual = st.number_input("Actual hours", 1, 200, 48)
@@ -403,6 +482,7 @@ with st.sidebar.form("add_shipment"):
             "id": new_id, "note": new_note,
             "origin": new_origin, "destination": new_dest,
             "violations": new_violations, "years_active": new_years, "volume": new_volume,
+            "manufacturer": new_mfr, "license": new_license,
             "values": vals, "temp_log": temps,
             "planned": new_planned, "actual": new_actual, "openings": new_openings,
         })
@@ -417,21 +497,29 @@ if st.sidebar.button("Reset to default shipments"):
 # RUN PIPELINE
 # ============================================================================
 
+doc_notes = {}  # per-shipment explanation of the document check, shown in the breakdown
+
+
 def run_pipeline(s):
-    doc = document_integrity_check(s["values"])
+    doc_benford = document_integrity_check(s["values"])
+    doc_registry, registry_note = registry_integrity_check(s["manufacturer"], s["license"])
+    doc = max(doc_benford, doc_registry)  # either half failing is a document problem
+    doc_notes[s["id"]] = f"Document check: declared values (Benford) {doc_benford:.2f}; registry {doc_registry:.2f} ({registry_note})."
     supp = supplier_risk_score(s["violations"], s["years_active"], s["volume"])
     cold = cold_chain_integrity_check(s["temp_log"])
     route = route_integrity_check(s["planned"], s["actual"])
     cust = custody_integrity_check(s["openings"])
     fused = fuse_risk_scores(doc, supp, cold, route, cust)
-    reasons = get_flag_reasons(doc, supp, cold, route, cust, flag_threshold)
+    reasons = get_flag_reasons(doc, supp, cold, route, cust)
+    if doc > 0.5:
+        parts = (["declared values"] if doc_benford > 0.5 else []) + (["registry"] if doc_registry > 0.5 else [])
+        reasons = [r.replace("Document anomaly", f"Document anomaly ({' + '.join(parts)})") for r in reasons]
     return {
         "Shipment": s["id"],
         "Scenario": s["note"],
         "Origin": s["origin"],
         "Destination": s["destination"],
         "Risk Score": round(fused, 3),
-        "Flagged": "YES" if fused >= flag_threshold else "No",
         "Reasons": ", ".join(reasons),
         "Document": round(doc, 2),
         "Supplier": round(supp, 2),
@@ -443,6 +531,11 @@ def run_pipeline(s):
 
 results = [run_pipeline(s) for s in st.session_state.shipments]
 df = pd.DataFrame(results).sort_values("Risk Score", ascending=False).reset_index(drop=True)
+
+# Customs can only inspect so many shipments: flag the top N by risk score.
+n_flag = max(1, round(len(df) * capacity_pct / 100))
+df.insert(5, "Flagged", ["YES" if i < n_flag else "No" for i in range(len(df))])
+cutoff = df["Risk Score"].iloc[n_flag - 1]  # lowest score that still gets inspected
 
 # ============================================================================
 # METRICS
@@ -505,9 +598,9 @@ st.divider()
 st.subheader("Shipment Risk Ranking (highest risk first)")
 
 def color_risk(val):
-    if val >= flag_threshold:
+    if val >= cutoff:
         return "background-color: #ffcccc"
-    elif val >= flag_threshold * 0.6:
+    elif val >= cutoff * 0.6:
         return "background-color: #fff4cc"
     return "background-color: #ccffcc"
 
@@ -539,20 +632,21 @@ st.divider()
 # DOCUMENT INTEGRITY — REAL DATA VALIDATION
 # ============================================================================
 
-st.subheader("Document Integrity — Real World Bank WITS Data")
+st.subheader("Document Integrity: Benford Baseline from Real WITS Trade Data")
 
 real_values = load_real_uae_pharma_imports()
 result = benford_check_real(real_values) if real_values else None
 
 if result:
     st.write(
-        f"Real UAE pharmaceutical import declarations (World Bank WITS): "
+        f"UAE pharmaceutical import trade values (World Bank WITS, HS 3004, 2021): "
         f"**{result['n_records']} records**, Benford deviation = **{result['deviation']}**."
     )
     st.caption(
-        "Two shipments (SH-1005 and SH-1012) use these real WITS trade declarations as their "
-        "invoice values. The Benford engine runs on them exactly as it would in production. "
-        "The remaining shipments use synthetic values for demonstration."
+        "Real, legitimate data is never perfectly Benford, so this deviation sets the baseline: "
+        "the Benford score only rises above it. Clean shipments' declared values are resampled from "
+        "these real values; fabricated and mildly-off cases are synthetic by design, since no labelled "
+        "fraud data is available. These are annual trade totals by partner country, not shipment-level declarations."
     )
 else:
     st.warning(
@@ -577,6 +671,7 @@ with col_a:
         st.error(f"FLAGGED: {row['Reasons']}")
     else:
         st.success("Cleared for standard processing")
+    st.caption(doc_notes[selected])
 
 with col_b:
     factor_df = pd.DataFrame({
@@ -591,5 +686,6 @@ st.caption(
     "Prototype for Presight Innovation Challenge | "
     "Benford's Law + MKT are real formulas | "
     "XGBoost + Logistic Regression trained on synthetic data with non-linear interactions | "
-    "Two shipments use real World Bank WITS trade data"
+    "Document check = Benford's Law + registry verification (simulated registry) | "
+    "Benford baseline from real World Bank WITS trade data"
 )

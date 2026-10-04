@@ -681,4 +681,4 @@ with col_a:
 with col_b:
     factor_df = pd.DataFrame({
         "Check": ["Document", "Supplier", "Cold-Chain", "Route", "Custody"],
-        "Risk": [row["Document"], row["Supplier"], row
+        "Risk": [row["Document"], row["Supplier"], row]

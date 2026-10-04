@@ -48,10 +48,6 @@ PORTS = {
 # REAL FORMULAS
 # ============================================================================
 
-# Benford deviation measured on real, legitimate UAE pharma trade values (WITS, see
-# bottom of the page). Real clean data is never perfectly Benford, so the score
-# only starts rising above this level. BENFORD_MAX is roughly where fabricated
-# values land.
 BENFORD_NORMAL = 0.29
 BENFORD_MAX = 1.5
 
@@ -94,12 +90,6 @@ def custody_integrity_check(openings):
 # ============================================================================
 # REGISTRY CHECK: the retrieval step of the proposal's RAG design
 # ============================================================================
-# Proposal: RAG verifies manufacturer / license claims against official registries.
-# Prototype: a small SIMULATED registry (fictional companies) stands in for MOHAP's
-# manufacturer and license registry. Retrieval = TF-IDF character n-gram similarity
-# (deterministic, runs offline). The language-model layer of the full RAG design
-# (reading unstructured registry documents, writing the explanation) is not built;
-# explanations here are templated.
 
 REGISTRY = [
     {"license_id": "LIC-1001", "manufacturer": "Aldara Pharmaceuticals", "status": "Active"},
@@ -284,7 +274,7 @@ def train_models():
     k20 = max(1, int(0.2 * len(order)))
     precision_at_10 = yf_test[order[:k10]].mean()
     precision_at_20 = yf_test[order[:k20]].mean()
-    base_rate = yf_test.mean()  # share of real problems if we inspected at random
+    base_rate = yf_test.mean()
 
     return {
         "xgb": xgb_model,
@@ -497,13 +487,13 @@ if st.sidebar.button("Reset to default shipments"):
 # RUN PIPELINE
 # ============================================================================
 
-doc_notes = {}  # per-shipment explanation of the document check, shown in the breakdown
+doc_notes = {}
 
 
 def run_pipeline(s):
     doc_benford = document_integrity_check(s["values"])
     doc_registry, registry_note = registry_integrity_check(s["manufacturer"], s["license"])
-    doc = max(doc_benford, doc_registry)  # either half failing is a document problem
+    doc = max(doc_benford, doc_registry)
     doc_notes[s["id"]] = f"Document check: declared values (Benford) {doc_benford:.2f}; registry {doc_registry:.2f} ({registry_note})."
     supp = supplier_risk_score(s["violations"], s["years_active"], s["volume"])
     cold = cold_chain_integrity_check(s["temp_log"])
@@ -532,10 +522,9 @@ def run_pipeline(s):
 results = [run_pipeline(s) for s in st.session_state.shipments]
 df = pd.DataFrame(results).sort_values("Risk Score", ascending=False).reset_index(drop=True)
 
-# Customs can only inspect so many shipments: flag the top N by risk score.
 n_flag = max(1, round(len(df) * capacity_pct / 100))
 df.insert(5, "Flagged", ["YES" if i < n_flag else "No" for i in range(len(df))])
-cutoff = df["Risk Score"].iloc[n_flag - 1]  # lowest score that still gets inspected
+cutoff = df["Risk Score"].iloc[n_flag - 1]
 
 # ============================================================================
 # METRICS
@@ -550,23 +539,35 @@ col4.metric("Highest Risk", df["Risk Score"].max())
 st.divider()
 
 # ============================================================================
-# MAP
+# MAP — aggregated by route (one arc per origin→destination pair)
 # ============================================================================
 
 st.subheader("Global Shipment Routes")
 
-arc_data = []
+route_groups = {}
 for _, row in df.iterrows():
-    origin_coords = PORTS.get(row["Origin"])
-    dest_coords = PORTS.get(row["Destination"])
+    key = (row["Origin"], row["Destination"])
+    if key not in route_groups:
+        route_groups[key] = {"count": 0, "max_risk": 0.0, "any_flagged": False}
+    route_groups[key]["count"] += 1
+    route_groups[key]["max_risk"] = max(route_groups[key]["max_risk"], row["Risk Score"])
+    if row["Flagged"] == "YES":
+        route_groups[key]["any_flagged"] = True
+
+arc_data = []
+for (origin, dest), info in route_groups.items():
+    origin_coords = PORTS.get(origin)
+    dest_coords = PORTS.get(dest)
     if origin_coords and dest_coords:
-        color = [220, 50, 50] if row["Flagged"] == "YES" else [50, 180, 90]
+        color = [220, 50, 50] if info["any_flagged"] else [50, 180, 90]
         arc_data.append({
-            "origin": origin_coords, "destination": dest_coords,
-            "color": color, "shipment": row["Shipment"],
-            "risk": row["Risk Score"],
-            "origin_name": row["Origin"],
-            "dest_name": row["Destination"],
+            "origin": origin_coords,
+            "destination": dest_coords,
+            "color": color,
+            "width": 1 + info["count"],
+            "label": f"{origin} → {dest}",
+            "count": info["count"],
+            "max_risk": round(info["max_risk"], 3),
         })
 
 arc_df = pd.DataFrame(arc_data)
@@ -576,18 +577,22 @@ if not arc_df.empty:
         "ArcLayer", data=arc_df,
         get_source_position="origin", get_target_position="destination",
         get_source_color="color", get_target_color="color",
-        get_width=3, get_height=0.3, pickable=True,
+        get_width="width", get_height=0.3, pickable=True, auto_highlight=True,
     )
     view_state = pdk.ViewState(latitude=20, longitude=70, zoom=2, pitch=0)
     st.pydeck_chart(pdk.Deck(
         layers=[arc_layer],
         initial_view_state=view_state,
         tooltip={
-            "html": "<b>{shipment}</b><br/>{origin_name} → {dest_name}<br/>Risk: {risk}",
+            "html": "<b>{label}</b><br/>Shipments: {count}<br/>Highest risk: {max_risk}",
             "style": {"backgroundColor": "white", "color": "black"},
         },
+        parameters={"pickingRadius": 10},
     ))
-    st.caption("Red arcs = flagged shipments | Green arcs = cleared shipments")
+    st.caption(
+        "One arc per route | Thickness = number of shipments | "
+        "Red = at least one flagged shipment on this route"
+    )
 
 st.divider()
 
@@ -676,16 +681,4 @@ with col_a:
 with col_b:
     factor_df = pd.DataFrame({
         "Check": ["Document", "Supplier", "Cold-Chain", "Route", "Custody"],
-        "Risk": [row["Document"], row["Supplier"], row["Cold-Chain"], row["Route"], row["Custody"]],
-    })
-    st.bar_chart(factor_df.set_index("Check"))
-
-st.divider()
-
-st.caption(
-    "Prototype for Presight Innovation Challenge | "
-    "Benford's Law + MKT are real formulas | "
-    "XGBoost + Logistic Regression trained on synthetic data with non-linear interactions | "
-    "Document check = Benford's Law + registry verification (simulated registry) | "
-    "Benford baseline from real World Bank WITS trade data"
-)
+        "Risk": [row["Document"], row["Supplier"], row

@@ -542,6 +542,60 @@ st.divider()
 # MAP — aggregated by route (one arc per origin→destination pair)
 # ============================================================================
 
+# st.subheader("Global Shipment Routes")
+
+# route_groups = {}
+# for _, row in df.iterrows():
+#     key = (row["Origin"], row["Destination"])
+#     if key not in route_groups:
+#         route_groups[key] = {"count": 0, "max_risk": 0.0, "any_flagged": False}
+#     route_groups[key]["count"] += 1
+#     route_groups[key]["max_risk"] = max(route_groups[key]["max_risk"], row["Risk Score"])
+#     if row["Flagged"] == "YES":
+#         route_groups[key]["any_flagged"] = True
+
+# arc_data = []
+# for (origin, dest), info in route_groups.items():
+#     origin_coords = PORTS.get(origin)
+#     dest_coords = PORTS.get(dest)
+#     if origin_coords and dest_coords:
+#         color = [220, 50, 50] if info["any_flagged"] else [50, 180, 90]
+#         arc_data.append({
+#             "origin": origin_coords,
+#             "destination": dest_coords,
+#             "color": color,
+#             "width": 1 + info["count"],
+#             "label": f"{origin} → {dest}",
+#             "count": info["count"],
+#             "max_risk": round(info["max_risk"], 3),
+#         })
+
+# arc_df = pd.DataFrame(arc_data)
+
+# if not arc_df.empty:
+#     arc_layer = pdk.Layer(
+#         "ArcLayer", data=arc_df,
+#         get_source_position="origin", get_target_position="destination",
+#         get_source_color="color", get_target_color="color",
+#         get_width="width", get_height=0.3, pickable=True, auto_highlight=True,
+#     )
+#     view_state = pdk.ViewState(latitude=20, longitude=70, zoom=2, pitch=0)
+#     st.pydeck_chart(pdk.Deck(
+#         layers=[arc_layer],
+#         initial_view_state=view_state,
+#         tooltip={
+#             "html": "<b>{label}</b><br/>Shipments: {count}<br/>Highest risk: {max_risk}",
+#             "style": {"backgroundColor": "white", "color": "black"},
+#         },
+#         parameters={"pickingRadius": 10},
+#     ))
+#     st.caption(
+#         "One arc per route | Thickness = number of shipments | "
+#         "Red = at least one flagged shipment on this route"
+#     )
+
+# st.divider()
+
 st.subheader("Global Shipment Routes")
 
 route_groups = {}
@@ -565,36 +619,32 @@ for (origin, dest), info in route_groups.items():
             "destination": dest_coords,
             "color": color,
             "width": 1 + info["count"],
-            "label": f"{origin} → {dest}",
-            "count": info["count"],
-            "max_risk": round(info["max_risk"], 3),
         })
 
 arc_df = pd.DataFrame(arc_data)
 
+# Always show the map regardless of hovering
 if not arc_df.empty:
     arc_layer = pdk.Layer(
         "ArcLayer", data=arc_df,
         get_source_position="origin", get_target_position="destination",
         get_source_color="color", get_target_color="color",
-        get_width="width", get_height=0.3, pickable=True, auto_highlight=True,
+        get_width="width", get_height=0.3,
     )
     view_state = pdk.ViewState(latitude=20, longitude=70, zoom=2, pitch=0)
     st.pydeck_chart(pdk.Deck(
         layers=[arc_layer],
         initial_view_state=view_state,
-        tooltip={
-            "html": "<b>{label}</b><br/>Shipments: {count}<br/>Highest risk: {max_risk}",
-            "style": {"backgroundColor": "white", "color": "black"},
-        },
-        parameters={"pickingRadius": 10},
     ))
-    st.caption(
-        "One arc per route | Thickness = number of shipments | "
-        "Red = at least one flagged shipment on this route"
-    )
 
-st.divider()
+# Always-visible list below the map — replaces hover tooltips entirely
+st.markdown("**Routes on the map:**")
+for (origin, dest), info in route_groups.items():
+    icon = "🔴" if info["any_flagged"] else "🟢"
+    st.caption(
+        f"{icon} **{origin} → {dest}** — "
+        f"{info['count']} shipment(s), highest risk {round(info['max_risk'], 3)}"
+    )
 
 # ============================================================================
 # RANKED TABLE
@@ -604,11 +654,9 @@ st.subheader("Shipment Risk Ranking (highest risk first)")
 
 def color_risk(val):
     if val >= cutoff:
-        return "background-color: #ffcccc"
-    elif val >= cutoff * 0.6:
-        return "background-color: #fff4cc"
-    return "background-color: #ccffcc"
-
+        return "background-color: #ffcccc; color: #000000"
+    return "background-color: #ccffcc; color: #000000"
+    
 styled = df.style.map(color_risk, subset=["Risk Score"])
 st.dataframe(styled, use_container_width=True, hide_index=True)
 

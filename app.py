@@ -202,7 +202,7 @@ def generate_mildly_off_values(n=100):
 
 @st.cache_resource
 def train_models():
-    rng = np.random.default_rng(10)
+    rng = np.random.default_rng(42)
 
     # --- Supplier risk model (XGBoost) ---
     n_suppliers = 800

@@ -681,4 +681,16 @@ with col_a:
 with col_b:
     factor_df = pd.DataFrame({
         "Check": ["Document", "Supplier", "Cold-Chain", "Route", "Custody"],
-        "Risk": [row["Document"], row["Supplier"], row]
+        "Risk": [row["Document"], row["Supplier"], row["Cold-Chain"], row["Route"], row["Custody"]],
+    })
+    st.bar_chart(factor_df.set_index("Check"))
+ 
+st.divider()
+ 
+st.caption(
+    "Prototype for Presight Innovation Challenge | "
+    "Benford's Law + MKT are real formulas | "
+    "XGBoost + Logistic Regression trained on synthetic data with non-linear interactions | "
+    "Document check = Benford's Law + registry verification (simulated registry) | "
+    "Benford baseline from real World Bank WITS trade data"
+)

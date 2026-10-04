@@ -479,10 +479,6 @@ with st.sidebar.form("add_shipment"):
         st.session_state["flash"] = f"Added {new_id}"
         st.rerun()
 
-if st.sidebar.button("Reset to default shipments"):
-    st.session_state.shipments = st.session_state.shipments[:14]
-    st.sidebar.success("Reset")
-
 # ============================================================================
 # RUN PIPELINE
 # ============================================================================
@@ -666,46 +662,52 @@ st.divider()
 # WHAT THE MODEL LEARNED
 # ============================================================================
 
-st.subheader("What the Model Learned")
-
+# Console log for reference (not shown in the product UI)
 feature_names = ["Document", "Supplier", "Cold-Chain", "Route", "Custody"]
 coefficients = log_model.coef_[0]
-
 importance_df = pd.DataFrame({
     "Signal": feature_names,
     "Learned Weight": [round(c, 3) for c in coefficients],
 }).sort_values("Learned Weight", ascending=False)
+print("=== Fusion model learned weights ===")
+print(importance_df.to_string(index=False))
+print(f"Precision@10%: {models['precision_at_10']:.3f}")
+print(f"Precision@20%: {models['precision_at_20']:.3f}")
+print(f"Fusion AUC: {models['fusion_auc']:.3f}")
+print(f"Base rate: {models['base_rate']:.3f}")
 
-st.dataframe(importance_df, use_container_width=True, hide_index=True)
-st.caption("Learned weights from the fusion model — higher = stronger predictor of actual problems.")
-
-st.divider()
+# Hidden in the product UI; available for Q&A
+with st.expander("Model diagnostics (for reference)"):
+    st.dataframe(importance_df, use_container_width=True, hide_index=True)
+    st.caption("Learned weights — higher = stronger predictor of actual problems.")
 
 # ============================================================================
 # DOCUMENT INTEGRITY — REAL DATA VALIDATION
 # ============================================================================
 
-st.subheader("Document Integrity: Benford Baseline from Real WITS Trade Data")
-
+# Console log for reference
 real_values = load_real_uae_pharma_imports()
 result = benford_check_real(real_values) if real_values else None
-
 if result:
-    st.write(
-        f"UAE pharmaceutical import trade values (World Bank WITS, HS 3004, 2021): "
-        f"**{result['n_records']} records**, Benford deviation = **{result['deviation']}**."
-    )
-    st.caption(
-        "Real, legitimate data is never perfectly Benford, so this deviation sets the baseline: "
-        "the Benford score only rises above it. Clean shipments' declared values are resampled from "
-        "these real values; fabricated and mildly-off cases are synthetic by design, since no labelled "
-        "fraud data is available. These are annual trade totals by partner country, not shipment-level declarations."
-    )
+    print("=== WITS Benford validation ===")
+    print(f"Records: {result['n_records']}")
+    print(f"Benford deviation: {result['deviation']}")
 else:
-    st.warning(
-        "Could not load 'WITS-By-HS6Product.xlsx'. Make sure the file is in the same "
-        "folder as app.py in your GitHub repo."
-    )
+    print("=== WITS Benford validation: file not loaded ===")
+
+# Hidden in the product UI; available for Q&A
+with st.expander("Validation: Benford's Law on real trade data"):
+    if result:
+        st.write(
+            f"UAE pharmaceutical import trade values (World Bank WITS, HS 3004, 2021): "
+            f"**{result['n_records']} records**, Benford deviation = **{result['deviation']}**."
+        )
+        st.caption(
+            "Real, legitimate data is never perfectly Benford, so this deviation sets the baseline: "
+            "the Benford score only rises above it."
+        )
+    else:
+        st.warning("Could not load 'WITS-By-HS6Product.xlsx'.")
 
 # ============================================================================
 # BREAKDOWN
@@ -735,10 +737,10 @@ with col_b:
  
 st.divider()
  
-st.caption(
-    "Prototype for Presight Innovation Challenge | "
-    "Benford's Law + MKT are real formulas | "
-    "XGBoost + Logistic Regression trained on synthetic data with non-linear interactions | "
-    "Document check = Benford's Law + registry verification (simulated registry) | "
-    "Benford baseline from real World Bank WITS trade data"
-)
+# st.caption(
+#     "Prototype for Presight Innovation Challenge | "
+#     "Benford's Law + MKT are real formulas | "
+#     "XGBoost + Logistic Regression trained on synthetic data with non-linear interactions | "
+#     "Document check = Benford's Law + registry verification (simulated registry) | "
+#     "Benford baseline from real World Bank WITS trade data"
+# )

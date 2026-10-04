@@ -1,12 +1,7 @@
 """
 PharmaCity: Pharmaceutical Supply Chain Integrity
-Streamlit Prototype for Presight Innovation Challenge
+Prototype for Presight Innovation Challenge
 
-Models trained at startup on synthetic data. Benford's Law and MKT are real formulas.
-Document check = Benford's Law (declared values) + registry verification (manufacturer
-and license claims). The registry is SIMULATED; it stands in for MOHAP's registry.
-Clean shipments' declared values are resampled from real World Bank WITS trade values.
-Random seed fixed for reproducibility.
 """
 
 import math
@@ -45,7 +40,7 @@ PORTS = {
 }
 
 # ============================================================================
-# REAL FORMULAS
+# FORMULAS
 # ============================================================================
 
 BENFORD_NORMAL = 0.29
@@ -56,11 +51,11 @@ def document_integrity_check(declared_values):
     """Benford's Law half of the document check: are the declared values plausible?"""
     if len(declared_values) < 10:
         return 0.0
-    expected = {d: math.log10(1 + 1 / d) for d in range(1, 10)}
-    leading = [int(str(int(abs(v)))[0]) for v in declared_values]
+    expected = {d: math.log10(1 + 1 / d) for d in range(1, 10)} # Formula
+    leading = [int(str(int(abs(v)))[0]) for v in declared_values] 
     n = len(leading)
-    observed = {d: leading.count(d) / n for d in range(1, 10)}
-    deviation = sum(abs(observed[d] - expected[d]) for d in range(1, 10))
+    observed = {d: leading.count(d) / n for d in range(1, 10)} 
+    deviation = sum(abs(observed[d] - expected[d]) for d in range(1, 10)) 
     return min(max((deviation - BENFORD_NORMAL) / (BENFORD_MAX - BENFORD_NORMAL), 0.0), 1.0)
 
 
@@ -207,7 +202,7 @@ def generate_mildly_off_values(n=100):
 
 @st.cache_resource
 def train_models():
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(10)
 
     # --- Supplier risk model (XGBoost) ---
     n_suppliers = 800
@@ -467,7 +462,7 @@ if "shipments" not in st.session_state:
 st.title("PharmaCity: Pharmaceutical Supply Chain Integrity")
 if "flash" in st.session_state:
     st.success(st.session_state.pop("flash"))
-st.markdown("*AI-powered risk scoring for customs inspection prioritization*")
+st.markdown("*Intelligent risk scoring for customs inspection prioritization*")
 st.divider()
 
 st.sidebar.header("Controls")
@@ -630,20 +625,11 @@ if not arc_df.empty:
         initial_view_state=view_state,
     ))
 
-# Always-visible list below the map — replaces hover tooltips entirely
-st.markdown("**Routes on the map:**")
-for (origin, dest), info in route_groups.items():
-    icon = "🔴" if info["any_flagged"] else "🟢"
-    st.caption(
-        f"{icon} **{origin} → {dest}** — "
-        f"{info['count']} shipment(s), highest risk {round(info['max_risk'], 3)}"
-    )
-
 # ============================================================================
 # RANKED TABLE
 # ============================================================================
 
-st.subheader("Shipment Risk Ranking (highest risk first)")
+st.subheader("Shipment Risk Ranking")
 
 def color_risk(val):
     if val >= cutoff:

@@ -5,3 +5,4 @@ numpy
 scikit-learn
 xgboost
 openpyxl
+starlette<1.4.0
